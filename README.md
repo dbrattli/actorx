@@ -146,12 +146,11 @@ A `Disposable` represents a subscription that can be cancelled. Call `dispose()`
 
 ### Transform
 
-|           Operator           |                  Description                   |
-| ---------------------------- | ---------------------------------------------- |
-| `map(source, fn)`            | Transform each element                         |
-| `flat_map(source, fn)`       | Map to observables, merge results (sync)       |
-| `flat_map_async(source, fn)` | Map to observables, merge results (actor-based)|
-| `concat_map(source, fn)`     | Map to observables, concatenate in order       |
+|         Operator         |                  Description                  |
+| ------------------------ | --------------------------------------------- |
+| `map(source, fn)`        | Transform each element                        |
+| `flat_map(source, fn)`   | Map to observables, merge results (actor-based) |
+| `concat_map(source, fn)` | Map to observables, concatenate in order      |
 
 ### Filter
 

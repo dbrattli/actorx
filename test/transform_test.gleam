@@ -123,234 +123,7 @@ pub fn map_constant_test() {
 }
 
 // ============================================================================
-// flat_map tests
-// ============================================================================
-
-pub fn flat_map_flattens_observables_test() {
-  let results = make_list_ref()
-  let completed = make_bool_ref(False)
-  let errors = make_list_ref()
-
-  let observable =
-    actorx.from_list([1, 2, 3])
-    |> actorx.flat_map(fn(x) { actorx.single(x * 10) })
-
-  let _ =
-    actorx.subscribe(observable, test_observer(results, completed, errors))
-
-  get_list_ref(results) |> should.equal([10, 20, 30])
-  get_bool_ref(completed) |> should.equal(True)
-}
-
-pub fn flat_map_empty_source_test() {
-  let results = make_list_ref()
-  let completed = make_bool_ref(False)
-  let errors = make_list_ref()
-
-  let observable: actorx.Observable(Int) =
-    actorx.empty()
-    |> actorx.flat_map(fn(x) { actorx.single(x) })
-
-  let _ =
-    actorx.subscribe(observable, test_observer(results, completed, errors))
-
-  get_list_ref(results) |> should.equal([])
-  get_bool_ref(completed) |> should.equal(True)
-}
-
-pub fn flat_map_to_empty_test() {
-  let results = make_list_ref()
-  let completed = make_bool_ref(False)
-  let errors = make_list_ref()
-
-  let observable =
-    actorx.from_list([1, 2, 3])
-    |> actorx.flat_map(fn(_) { actorx.empty() })
-
-  let _ =
-    actorx.subscribe(observable, test_observer(results, completed, errors))
-
-  get_list_ref(results) |> should.equal([])
-  get_bool_ref(completed) |> should.equal(True)
-}
-
-pub fn flat_map_expands_to_multiple_test() {
-  let results = make_list_ref()
-  let completed = make_bool_ref(False)
-  let errors = make_list_ref()
-
-  let observable =
-    actorx.from_list([1, 2])
-    |> actorx.flat_map(fn(x) { actorx.from_list([x, x * 10]) })
-
-  let _ =
-    actorx.subscribe(observable, test_observer(results, completed, errors))
-
-  // Each element expands to [x, x*10]
-  get_list_ref(results) |> should.equal([1, 10, 2, 20])
-  get_bool_ref(completed) |> should.equal(True)
-}
-
-pub fn flat_map_cartesian_product_test() {
-  let results = make_list_ref()
-  let completed = make_bool_ref(False)
-  let errors = make_list_ref()
-
-  // [1, 2] x [10, 20] = [11, 21, 12, 22]
-  let observable =
-    actorx.from_list([1, 2])
-    |> actorx.flat_map(fn(x) {
-      actorx.from_list([10, 20])
-      |> actorx.map(fn(y) { x + y })
-    })
-
-  let _ =
-    actorx.subscribe(observable, test_observer(results, completed, errors))
-
-  get_list_ref(results) |> should.equal([11, 21, 12, 22])
-  get_bool_ref(completed) |> should.equal(True)
-}
-
-// ============================================================================
-// flat_map monad laws tests
-// ============================================================================
-
-/// Left identity: return x >>= f  ===  f x
-pub fn flat_map_monad_law_left_identity_test() {
-  let f = fn(x) { actorx.single(x * 10) }
-
-  // return x >>= f
-  let results1 = make_list_ref()
-  let completed1 = make_bool_ref(False)
-  let errors1 = make_list_ref()
-  let observable1 =
-    actorx.single(42)
-    |> actorx.flat_map(f)
-  let _ =
-    actorx.subscribe(observable1, test_observer(results1, completed1, errors1))
-
-  // f x
-  let results2 = make_list_ref()
-  let completed2 = make_bool_ref(False)
-  let errors2 = make_list_ref()
-  let observable2 = f(42)
-  let _ =
-    actorx.subscribe(observable2, test_observer(results2, completed2, errors2))
-
-  get_list_ref(results1) |> should.equal(get_list_ref(results2))
-  get_list_ref(results1) |> should.equal([420])
-}
-
-/// Right identity: m >>= return  ===  m
-pub fn flat_map_monad_law_right_identity_test() {
-  let m = actorx.single(42)
-
-  // m
-  let results1 = make_list_ref()
-  let completed1 = make_bool_ref(False)
-  let errors1 = make_list_ref()
-  let _ = actorx.subscribe(m, test_observer(results1, completed1, errors1))
-
-  // m >>= return
-  let results2 = make_list_ref()
-  let completed2 = make_bool_ref(False)
-  let errors2 = make_list_ref()
-  let observable2 =
-    m
-    |> actorx.flat_map(actorx.single)
-  let _ =
-    actorx.subscribe(observable2, test_observer(results2, completed2, errors2))
-
-  get_list_ref(results1) |> should.equal(get_list_ref(results2))
-  get_list_ref(results1) |> should.equal([42])
-}
-
-/// Associativity: (m >>= f) >>= g  ===  m >>= (\x -> f x >>= g)
-pub fn flat_map_monad_law_associativity_test() {
-  let m = actorx.single(42)
-  let f = fn(x) { actorx.single(x * 1000) }
-  let g = fn(x) { actorx.single(x * 42) }
-
-  // (m >>= f) >>= g
-  let results1 = make_list_ref()
-  let completed1 = make_bool_ref(False)
-  let errors1 = make_list_ref()
-  let observable1 =
-    m
-    |> actorx.flat_map(f)
-    |> actorx.flat_map(g)
-  let _ =
-    actorx.subscribe(observable1, test_observer(results1, completed1, errors1))
-
-  // m >>= (\x -> f x >>= g)
-  let results2 = make_list_ref()
-  let completed2 = make_bool_ref(False)
-  let errors2 = make_list_ref()
-  let observable2 =
-    m
-    |> actorx.flat_map(fn(x) { f(x) |> actorx.flat_map(g) })
-  let _ =
-    actorx.subscribe(observable2, test_observer(results2, completed2, errors2))
-
-  get_list_ref(results1) |> should.equal(get_list_ref(results2))
-  get_list_ref(results1) |> should.equal([1_764_000])
-}
-
-// ============================================================================
-// concat_map tests
-// ============================================================================
-
-pub fn concat_map_preserves_order_test() {
-  let results = make_list_ref()
-  let completed = make_bool_ref(False)
-  let errors = make_list_ref()
-
-  let observable =
-    actorx.from_list([1, 2, 3])
-    |> actorx.concat_map(fn(x) { actorx.from_list([x, x * 10]) })
-
-  let _ =
-    actorx.subscribe(observable, test_observer(results, completed, errors))
-
-  // Sequential: [1, 10], then [2, 20], then [3, 30]
-  get_list_ref(results) |> should.equal([1, 10, 2, 20, 3, 30])
-  get_bool_ref(completed) |> should.equal(True)
-}
-
-pub fn concat_map_empty_source_test() {
-  let results = make_list_ref()
-  let completed = make_bool_ref(False)
-  let errors = make_list_ref()
-
-  let observable: actorx.Observable(Int) =
-    actorx.empty()
-    |> actorx.concat_map(fn(x) { actorx.single(x) })
-
-  let _ =
-    actorx.subscribe(observable, test_observer(results, completed, errors))
-
-  get_list_ref(results) |> should.equal([])
-  get_bool_ref(completed) |> should.equal(True)
-}
-
-pub fn concat_map_to_single_test() {
-  let results = make_list_ref()
-  let completed = make_bool_ref(False)
-  let errors = make_list_ref()
-
-  let observable =
-    actorx.from_list([1, 2, 3])
-    |> actorx.concat_map(fn(x) { actorx.single(x * 100) })
-
-  let _ =
-    actorx.subscribe(observable, test_observer(results, completed, errors))
-
-  get_list_ref(results) |> should.equal([100, 200, 300])
-  get_bool_ref(completed) |> should.equal(True)
-}
-
-// ============================================================================
-// flat_map_async tests (use message-based collection for async)
+// flat_map tests (use message-based collection for actor-based flat_map)
 // ============================================================================
 
 fn message_observer(subj: Subject(Notification(a))) -> types.Observer(a) {
@@ -390,12 +163,12 @@ fn collect_messages_loop(
   }
 }
 
-pub fn flat_map_async_flattens_observables_test() {
+pub fn flat_map_flattens_observables_test() {
   let result_subject: Subject(Notification(Int)) = process.new_subject()
 
   let observable =
     actorx.from_list([1, 2, 3])
-    |> actorx.flat_map_async(fn(x) { actorx.single(x * 10) })
+    |> actorx.flat_map(fn(x) { actorx.single(x * 10) })
 
   let _ = actorx.subscribe(observable, message_observer(result_subject))
 
@@ -405,12 +178,12 @@ pub fn flat_map_async_flattens_observables_test() {
   completed |> should.be_true()
 }
 
-pub fn flat_map_async_empty_source_test() {
+pub fn flat_map_empty_source_test() {
   let result_subject: Subject(Notification(Int)) = process.new_subject()
 
   let observable: actorx.Observable(Int) =
     actorx.empty()
-    |> actorx.flat_map_async(fn(x) { actorx.single(x) })
+    |> actorx.flat_map(fn(x) { actorx.single(x) })
 
   let _ = actorx.subscribe(observable, message_observer(result_subject))
 
@@ -420,12 +193,27 @@ pub fn flat_map_async_empty_source_test() {
   completed |> should.be_true()
 }
 
-pub fn flat_map_async_expands_to_multiple_test() {
+pub fn flat_map_to_empty_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.from_list([1, 2, 3])
+    |> actorx.flat_map(fn(_) { actorx.empty() })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  values |> should.equal([])
+  completed |> should.be_true()
+}
+
+pub fn flat_map_expands_to_multiple_test() {
   let result_subject: Subject(Notification(Int)) = process.new_subject()
 
   let observable =
     actorx.from_list([1, 2])
-    |> actorx.flat_map_async(fn(x) { actorx.from_list([x, x * 10]) })
+    |> actorx.flat_map(fn(x) { actorx.from_list([x, x * 10]) })
 
   let _ = actorx.subscribe(observable, message_observer(result_subject))
 
@@ -436,13 +224,32 @@ pub fn flat_map_async_expands_to_multiple_test() {
   completed |> should.be_true()
 }
 
-pub fn flat_map_async_waits_for_all_inners_test() {
+pub fn flat_map_cartesian_product_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  // [1, 2] x [10, 20] = [11, 21, 12, 22]
+  let observable =
+    actorx.from_list([1, 2])
+    |> actorx.flat_map(fn(x) {
+      actorx.from_list([10, 20])
+      |> actorx.map(fn(y) { x + y })
+    })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  values |> should.equal([11, 21, 12, 22])
+  completed |> should.be_true()
+}
+
+pub fn flat_map_waits_for_all_inners_test() {
   let result_subject: Subject(Notification(Int)) = process.new_subject()
 
   // Source completes immediately but inners have delays
   let observable =
     actorx.from_list([1, 2])
-    |> actorx.flat_map_async(fn(x) {
+    |> actorx.flat_map(fn(x) {
       actorx.timer(30)
       |> actorx.map(fn(_) { x * 10 })
     })
@@ -453,5 +260,129 @@ pub fn flat_map_async_waits_for_all_inners_test() {
   let #(values, completed, _errors) = collect_messages(result_subject, 200)
 
   values |> should.equal([10, 20])
+  completed |> should.be_true()
+}
+
+// ============================================================================
+// flat_map monad laws tests
+// ============================================================================
+
+/// Left identity: return x >>= f  ===  f x
+pub fn flat_map_monad_law_left_identity_test() {
+  let f = fn(x) { actorx.single(x * 10) }
+
+  // return x >>= f
+  let result1: Subject(Notification(Int)) = process.new_subject()
+  let observable1 =
+    actorx.single(42)
+    |> actorx.flat_map(f)
+  let _ = actorx.subscribe(observable1, message_observer(result1))
+  let #(values1, _, _) = collect_messages(result1, 100)
+
+  // f x
+  let result2: Subject(Notification(Int)) = process.new_subject()
+  let observable2 = f(42)
+  let _ = actorx.subscribe(observable2, message_observer(result2))
+  let #(values2, _, _) = collect_messages(result2, 100)
+
+  values1 |> should.equal(values2)
+  values1 |> should.equal([420])
+}
+
+/// Right identity: m >>= return  ===  m
+pub fn flat_map_monad_law_right_identity_test() {
+  let m = actorx.single(42)
+
+  // m
+  let result1: Subject(Notification(Int)) = process.new_subject()
+  let _ = actorx.subscribe(m, message_observer(result1))
+  let #(values1, _, _) = collect_messages(result1, 100)
+
+  // m >>= return
+  let result2: Subject(Notification(Int)) = process.new_subject()
+  let observable2 =
+    actorx.single(42)
+    |> actorx.flat_map(actorx.single)
+  let _ = actorx.subscribe(observable2, message_observer(result2))
+  let #(values2, _, _) = collect_messages(result2, 100)
+
+  values1 |> should.equal(values2)
+  values1 |> should.equal([42])
+}
+
+/// Associativity: (m >>= f) >>= g  ===  m >>= (\x -> f x >>= g)
+pub fn flat_map_monad_law_associativity_test() {
+  let m = actorx.single(42)
+  let f = fn(x) { actorx.single(x * 1000) }
+  let g = fn(x) { actorx.single(x * 42) }
+
+  // (m >>= f) >>= g
+  let result1: Subject(Notification(Int)) = process.new_subject()
+  let observable1 =
+    m
+    |> actorx.flat_map(f)
+    |> actorx.flat_map(g)
+  let _ = actorx.subscribe(observable1, message_observer(result1))
+  let #(values1, _, _) = collect_messages(result1, 100)
+
+  // m >>= (\x -> f x >>= g)
+  let result2: Subject(Notification(Int)) = process.new_subject()
+  let observable2 =
+    actorx.single(42)
+    |> actorx.flat_map(fn(x) { f(x) |> actorx.flat_map(g) })
+  let _ = actorx.subscribe(observable2, message_observer(result2))
+  let #(values2, _, _) = collect_messages(result2, 100)
+
+  values1 |> should.equal(values2)
+  values1 |> should.equal([1_764_000])
+}
+
+// ============================================================================
+// concat_map tests
+// ============================================================================
+
+pub fn concat_map_preserves_order_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.from_list([1, 2, 3])
+    |> actorx.concat_map(fn(x) { actorx.from_list([x, x * 10]) })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  // Sequential: [1, 10], then [2, 20], then [3, 30]
+  values |> should.equal([1, 10, 2, 20, 3, 30])
+  completed |> should.be_true()
+}
+
+pub fn concat_map_empty_source_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable: actorx.Observable(Int) =
+    actorx.empty()
+    |> actorx.concat_map(fn(x) { actorx.single(x) })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  values |> should.equal([])
+  completed |> should.be_true()
+}
+
+pub fn concat_map_to_single_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.from_list([1, 2, 3])
+    |> actorx.concat_map(fn(x) { actorx.single(x * 100) })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  values |> should.equal([100, 200, 300])
   completed |> should.be_true()
 }

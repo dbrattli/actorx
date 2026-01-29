@@ -20,16 +20,7 @@ import mist.{type WebsocketConnection, type WebsocketMessage}
 
 const text = "TIME FLIES LIKE AN ARROW"
 
-/// Toggle between sync and async flat_map to compare performance
-/// Change to False to use sync flat_map
-const use_async_flat_map = True
-
-fn html() -> String {
-  let mode = case use_async_flat_map {
-    True -> "flat_map_async"
-    False -> "flat_map"
-  }
-  "<!DOCTYPE html>
+const html = "<!DOCTYPE html>
 <html>
 <head>
   <title>Timeflies - ActorX Demo</title>
@@ -83,7 +74,7 @@ fn html() -> String {
 <body>
   <div id=\"title\">ActorX Timeflies Demo</div>
   <div id=\"stats\">
-    <div>Mode: <span class=\"stat-value\">" <> mode <> "</span></div>
+    <div>Mode: <span class=\"stat-value\">flat_map</span></div>
     <div>In: <span id=\"in-rate\" class=\"stat-value\">0</span> msg/s</div>
     <div>Out: <span id=\"out-rate\" class=\"stat-value\">0</span> msg/s</div>
   </div>
@@ -152,7 +143,6 @@ fn html() -> String {
   </script>
 </body>
 </html>"
-}
 
 /// Mouse position from client
 type MousePos {
@@ -197,7 +187,7 @@ fn observer_start() -> Nil
 fn serve_html() -> response.Response(mist.ResponseData) {
   response.new(200)
   |> response.set_header("content-type", "text/html")
-  |> response.set_body(mist.Bytes(bytes_tree.from_string(html())))
+  |> response.set_body(mist.Bytes(bytes_tree.from_string(html)))
 }
 
 fn not_found() -> response.Response(mist.ResponseData) {
@@ -239,14 +229,9 @@ fn on_ws_init(
     })
   }
 
-  let stream = case use_async_flat_map {
-    True ->
-      actorx.from_list(letters_with_index)
-      |> actorx.flat_map_async(mapper)
-    False ->
-      actorx.from_list(letters_with_index)
-      |> actorx.flat_map(mapper)
-  }
+  let stream =
+    actorx.from_list(letters_with_index)
+    |> actorx.flat_map(mapper)
 
   // Create a subject to receive transformed positions
   let output_subject: Subject(LetterPos) = process.new_subject()

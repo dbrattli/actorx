@@ -158,6 +158,10 @@ pub fn map(
 }
 
 /// Project each element to an observable and flatten.
+///
+/// Uses an actor to coordinate inner subscriptions, making it safe for
+/// both sync and async sources. Properly tracks all inner subscriptions
+/// and only completes when both the source AND all inners have completed.
 pub fn flat_map(
   source: types.Observable(a),
   mapper: fn(a) -> types.Observable(b),
@@ -171,19 +175,6 @@ pub fn concat_map(
   mapper: fn(a) -> types.Observable(b),
 ) -> types.Observable(b) {
   transform.concat_map(source, mapper)
-}
-
-/// Actor-based flat_map for async sources.
-///
-/// Unlike `flat_map`, this version uses an actor to coordinate inner
-/// subscriptions, making it safe for async sources that emit over time.
-/// It properly tracks all inner subscriptions and only completes when
-/// both the source AND all inner observables have completed.
-pub fn flat_map_async(
-  source: types.Observable(a),
-  mapper: fn(a) -> types.Observable(b),
-) -> types.Observable(b) {
-  transform.flat_map_async(source, mapper)
 }
 
 // ============================================================================

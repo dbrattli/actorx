@@ -112,8 +112,7 @@ fn subject_loop(
       subject_loop(control, [subscriber, ..subscribers])
     }
     SubjectUnsubscribe(id) -> {
-      let new_subscribers =
-        list.filter(subscribers, fn(s) { s.id != id })
+      let new_subscribers = list.filter(subscribers, fn(s) { s.id != id })
       subject_loop(control, new_subscribers)
     }
     SubjectNotify(n) -> {

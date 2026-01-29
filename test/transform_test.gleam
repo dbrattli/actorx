@@ -386,3 +386,217 @@ pub fn concat_map_to_single_test() {
   values |> should.equal([100, 200, 300])
   completed |> should.be_true()
 }
+
+// ============================================================================
+// scan tests
+// ============================================================================
+
+pub fn scan_running_sum_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.from_list([1, 2, 3, 4, 5])
+    |> actorx.scan(0, fn(acc, x) { acc + x })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  // Running sum: 1, 1+2=3, 3+3=6, 6+4=10, 10+5=15
+  values |> should.equal([1, 3, 6, 10, 15])
+  completed |> should.be_true()
+}
+
+pub fn scan_running_product_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.from_list([1, 2, 3, 4])
+    |> actorx.scan(1, fn(acc, x) { acc * x })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  // Running product: 1, 1*2=2, 2*3=6, 6*4=24
+  values |> should.equal([1, 2, 6, 24])
+  completed |> should.be_true()
+}
+
+pub fn scan_empty_source_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.empty()
+    |> actorx.scan(0, fn(acc, x) { acc + x })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  values |> should.equal([])
+  completed |> should.be_true()
+}
+
+pub fn scan_single_value_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.single(42)
+    |> actorx.scan(0, fn(acc, x) { acc + x })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  values |> should.equal([42])
+  completed |> should.be_true()
+}
+
+pub fn scan_collect_to_list_test() {
+  let result_subject: Subject(Notification(List(Int))) = process.new_subject()
+
+  let observable =
+    actorx.from_list([1, 2, 3])
+    |> actorx.scan([], fn(acc, x) { list.append(acc, [x]) })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  values |> should.equal([[1], [1, 2], [1, 2, 3]])
+  completed |> should.be_true()
+}
+
+pub fn scan_with_interval_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.interval(20)
+    |> actorx.take(4)
+    |> actorx.scan(0, fn(acc, x) { acc + x })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 200)
+
+  // interval emits 0, 1, 2, 3; running sum: 0, 0+1=1, 1+2=3, 3+3=6
+  values |> should.equal([0, 1, 3, 6])
+  completed |> should.be_true()
+}
+
+// ============================================================================
+// reduce tests
+// ============================================================================
+
+pub fn reduce_sum_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.from_list([1, 2, 3, 4, 5])
+    |> actorx.reduce(0, fn(acc, x) { acc + x })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  // Only emits final sum: 15
+  values |> should.equal([15])
+  completed |> should.be_true()
+}
+
+pub fn reduce_product_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.from_list([1, 2, 3, 4])
+    |> actorx.reduce(1, fn(acc, x) { acc * x })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  // Only emits final product: 24
+  values |> should.equal([24])
+  completed |> should.be_true()
+}
+
+pub fn reduce_empty_source_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.empty()
+    |> actorx.reduce(0, fn(acc, x) { acc + x })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  // Empty source: emits initial value
+  values |> should.equal([0])
+  completed |> should.be_true()
+}
+
+pub fn reduce_single_value_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.single(42)
+    |> actorx.reduce(0, fn(acc, x) { acc + x })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  values |> should.equal([42])
+  completed |> should.be_true()
+}
+
+pub fn reduce_collect_to_list_test() {
+  let result_subject: Subject(Notification(List(Int))) = process.new_subject()
+
+  let observable =
+    actorx.from_list([1, 2, 3])
+    |> actorx.reduce([], fn(acc, x) { list.append(acc, [x]) })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  // Only emits final collected list
+  values |> should.equal([[1, 2, 3]])
+  completed |> should.be_true()
+}
+
+pub fn reduce_with_interval_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.interval(20)
+    |> actorx.take(4)
+    |> actorx.reduce(0, fn(acc, x) { acc + x })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 200)
+
+  // interval emits 0, 1, 2, 3; final sum: 6
+  values |> should.equal([6])
+  completed |> should.be_true()
+}
+
+pub fn reduce_count_test() {
+  let result_subject: Subject(Notification(Int)) = process.new_subject()
+
+  let observable =
+    actorx.from_list(["a", "b", "c", "d", "e"])
+    |> actorx.reduce(0, fn(acc, _) { acc + 1 })
+
+  let _ = actorx.subscribe(observable, message_observer(result_subject))
+
+  let #(values, completed, _errors) = collect_messages(result_subject, 100)
+
+  // Count: 5
+  values |> should.equal([5])
+  completed |> should.be_true()
+}

@@ -5,6 +5,8 @@
 ////
 //// - subject: Multicast subject, allows multiple subscribers
 //// - single_subject: Single subscriber only, buffers until subscribed
+//// - publish: Convert cold observable to connectable hot observable
+//// - share: Auto-connecting multicast (publish + refCount)
 
 import actorx/types.{
   type Disposable, type Notification, type Observable, type Observer, Disposable,
@@ -260,4 +262,397 @@ fn single_subject_loop(
 fn flush_pending(observer: Observer(a), pending: List(Notification(a))) -> Nil {
   let Observer(notify) = observer
   list.each(pending, notify)
+}
+
+// ============================================================================
+// Publish - Connectable Observable
+// ============================================================================
+
+/// Messages for the publish actor
+type PublishMsg(a) {
+  /// Subscribe a downstream observer
+  PublishSubscribe(Int, Observer(a), Subject(Disposable))
+  /// Unsubscribe by id
+  PublishUnsubscribe(Int)
+  /// Connect to source
+  PublishConnect(Subject(Disposable))
+  /// Notification from source
+  PublishNotify(Notification(a))
+  /// Dispose connection
+  PublishDisposeConnection
+}
+
+/// State for publish actor
+type PublishState(a) {
+  PublishState(
+    subscribers: List(Subscriber(a)),
+    connection: Option(Disposable),
+    terminal: Option(Notification(a)),
+  )
+}
+
+/// Converts a cold observable into a connectable hot observable.
+///
+/// Returns a tuple of (Observable, connect_fn) where:
+/// - The Observable can be subscribed to by multiple observers
+/// - The connect function starts the source subscription
+///
+/// Values are only emitted after connect() is called. Multiple subscribers
+/// share the same source subscription.
+///
+/// ## Example
+/// ```gleam
+/// let #(hot, connect) = publish(cold_source)
+///
+/// // Subscribe multiple observers (source not started yet)
+/// let _d1 = hot |> actorx.subscribe(observer1)
+/// let _d2 = hot |> actorx.subscribe(observer2)
+///
+/// // Now connect - source starts, both observers receive values
+/// let connection = connect()
+///
+/// // Disconnect when done
+/// let Disposable(dispose) = connection
+/// dispose()
+/// ```
+pub fn publish(source: Observable(a)) -> #(Observable(a), fn() -> Disposable) {
+  let control_ready: Subject(Subject(PublishMsg(a))) = process.new_subject()
+
+  // Spawn the coordinator actor
+  process.spawn(fn() {
+    let control: Subject(PublishMsg(a)) = process.new_subject()
+    process.send(control_ready, control)
+    let initial_state =
+      PublishState(subscribers: [], connection: None, terminal: None)
+    publish_loop(control, source, initial_state)
+  })
+
+  // Get the actor's control subject
+  let control = case process.receive(control_ready, 1000) {
+    Ok(s) -> s
+    Error(_) -> panic as "Failed to create publish"
+  }
+
+  // Observable side - subscribes to receive notifications
+  let observable =
+    Observable(subscribe: fn(downstream) {
+      let reply: Subject(Disposable) = process.new_subject()
+      let id = erlang_unique_integer()
+      process.send(control, PublishSubscribe(id, downstream, reply))
+      case process.receive(reply, 5000) {
+        Ok(disp) -> disp
+        Error(_) -> panic as "publish subscribe timeout"
+      }
+    })
+
+  // Connect function - starts the source subscription
+  let connect = fn() {
+    let reply: Subject(Disposable) = process.new_subject()
+    process.send(control, PublishConnect(reply))
+    case process.receive(reply, 5000) {
+      Ok(disp) -> disp
+      Error(_) -> panic as "publish connect timeout"
+    }
+  }
+
+  #(observable, connect)
+}
+
+fn publish_loop(
+  control: Subject(PublishMsg(a)),
+  source: Observable(a),
+  state: PublishState(a),
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    PublishSubscribe(id, observer, reply) -> {
+      // If already terminated, immediately send terminal and return no-op disposable
+      case state.terminal {
+        Some(terminal_notification) -> {
+          let Observer(notify) = observer
+          notify(terminal_notification)
+          let disp = Disposable(dispose: fn() { Nil })
+          process.send(reply, disp)
+          publish_loop(control, source, state)
+        }
+        None -> {
+          let subscriber = Subscriber(id: id, observer: observer)
+          let disp =
+            Disposable(dispose: fn() {
+              process.send(control, PublishUnsubscribe(id))
+              Nil
+            })
+          process.send(reply, disp)
+          let new_state =
+            PublishState(..state, subscribers: [subscriber, ..state.subscribers])
+          publish_loop(control, source, new_state)
+        }
+      }
+    }
+    PublishUnsubscribe(id) -> {
+      let new_subscribers = list.filter(state.subscribers, fn(s) { s.id != id })
+      let new_state = PublishState(..state, subscribers: new_subscribers)
+      publish_loop(control, source, new_state)
+    }
+    PublishConnect(reply) -> {
+      case state.connection {
+        Some(existing) -> {
+          // Already connected - return existing connection (or no-op if terminated)
+          process.send(reply, existing)
+          publish_loop(control, source, state)
+        }
+        None -> {
+          // If already terminated, just return a no-op disposable
+          case state.terminal {
+            Some(_) -> {
+              let disp = Disposable(dispose: fn() { Nil })
+              process.send(reply, disp)
+              publish_loop(control, source, state)
+            }
+            None -> {
+              // Subscribe to source
+              let source_observer =
+                Observer(notify: fn(n) {
+                  process.send(control, PublishNotify(n))
+                })
+              let Observable(subscribe) = source
+              let source_disp = subscribe(source_observer)
+
+              let conn_disp =
+                Disposable(dispose: fn() {
+                  let Disposable(dispose_source) = source_disp
+                  dispose_source()
+                  process.send(control, PublishDisposeConnection)
+                  Nil
+                })
+              process.send(reply, conn_disp)
+              let new_state = PublishState(..state, connection: Some(conn_disp))
+              publish_loop(control, source, new_state)
+            }
+          }
+        }
+      }
+    }
+    PublishNotify(n) -> {
+      // Broadcast to all subscribers
+      list.each(state.subscribers, fn(s) {
+        let Observer(notify) = s.observer
+        notify(n)
+      })
+      // On terminal events, store terminal but keep looping
+      case n {
+        OnCompleted -> {
+          let new_state = PublishState(..state, terminal: Some(n))
+          publish_loop(control, source, new_state)
+        }
+        OnError(_) -> {
+          let new_state = PublishState(..state, terminal: Some(n))
+          publish_loop(control, source, new_state)
+        }
+        OnNext(_) -> publish_loop(control, source, state)
+      }
+    }
+    PublishDisposeConnection -> {
+      let new_state = PublishState(..state, connection: None)
+      publish_loop(control, source, new_state)
+    }
+  }
+}
+
+// ============================================================================
+// Share - Auto-connecting Multicast
+// ============================================================================
+
+/// Messages for the share actor
+type ShareMsg(a) {
+  /// Subscribe a downstream observer
+  ShareSubscribe(Int, Observer(a), Subject(Disposable))
+  /// Unsubscribe by id
+  ShareUnsubscribe(Int)
+  /// Notification from source
+  ShareNotify(Notification(a))
+}
+
+/// Share state
+type ShareState(a) {
+  ShareState(
+    subscribers: List(Subscriber(a)),
+    source_disposable: Option(Disposable),
+    terminal: Option(Notification(a)),
+  )
+}
+
+/// Shares a single subscription to the source among multiple subscribers.
+///
+/// Automatically connects to the source when the first subscriber subscribes,
+/// and disconnects when the last subscriber unsubscribes.
+///
+/// This is equivalent to `publish(source)` with automatic reference counting.
+///
+/// ## Example
+/// ```gleam
+/// let shared =
+///   interval(100)
+///   |> share()
+///
+/// // First subscriber - source starts
+/// let d1 = shared |> actorx.subscribe(observer1)
+///
+/// // Second subscriber - shares same source
+/// let d2 = shared |> actorx.subscribe(observer2)
+///
+/// // Unsubscribe first
+/// let Disposable(dispose1) = d1
+/// dispose1()
+///
+/// // Unsubscribe last - source stops
+/// let Disposable(dispose2) = d2
+/// dispose2()
+/// ```
+pub fn share(source: Observable(a)) -> Observable(a) {
+  let control_ready: Subject(Subject(ShareMsg(a))) = process.new_subject()
+
+  // Spawn the coordinator actor
+  process.spawn(fn() {
+    let control: Subject(ShareMsg(a)) = process.new_subject()
+    process.send(control_ready, control)
+    let initial_state =
+      ShareState(subscribers: [], source_disposable: None, terminal: None)
+    share_loop(control, source, initial_state)
+  })
+
+  // Get the actor's control subject
+  let control = case process.receive(control_ready, 1000) {
+    Ok(s) -> s
+    Error(_) -> panic as "Failed to create share"
+  }
+
+  // Observable side
+  Observable(subscribe: fn(downstream) {
+    let reply: Subject(Disposable) = process.new_subject()
+    let id = erlang_unique_integer()
+    process.send(control, ShareSubscribe(id, downstream, reply))
+    case process.receive(reply, 5000) {
+      Ok(disp) -> disp
+      Error(_) -> panic as "share subscribe timeout"
+    }
+  })
+}
+
+fn share_loop(
+  control: Subject(ShareMsg(a)),
+  source: Observable(a),
+  state: ShareState(a),
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    ShareSubscribe(id, observer, reply) -> {
+      // If previously terminated and no active connection, reconnect fresh
+      let #(new_source_disp, reset_terminal) = case state.terminal {
+        Some(_) -> {
+          case state.source_disposable {
+            None -> {
+              // Previous source completed, start fresh
+              let source_observer =
+                Observer(notify: fn(n) {
+                  process.send(control, ShareNotify(n))
+                })
+              let Observable(subscribe) = source
+              #(Some(subscribe(source_observer)), True)
+            }
+            Some(d) -> #(Some(d), False)
+          }
+        }
+        None -> {
+          case state.source_disposable {
+            Some(d) -> #(Some(d), False)
+            None -> {
+              // First subscriber, connect
+              let source_observer =
+                Observer(notify: fn(n) {
+                  process.send(control, ShareNotify(n))
+                })
+              let Observable(subscribe) = source
+              #(Some(subscribe(source_observer)), False)
+            }
+          }
+        }
+      }
+
+      let subscriber = Subscriber(id: id, observer: observer)
+      let new_subscribers = [subscriber, ..state.subscribers]
+
+      let disp =
+        Disposable(dispose: fn() {
+          process.send(control, ShareUnsubscribe(id))
+          Nil
+        })
+      process.send(reply, disp)
+
+      let new_terminal = case reset_terminal {
+        True -> None
+        False -> state.terminal
+      }
+
+      share_loop(
+        control,
+        source,
+        ShareState(
+          subscribers: new_subscribers,
+          source_disposable: new_source_disp,
+          terminal: new_terminal,
+        ),
+      )
+    }
+    ShareUnsubscribe(id) -> {
+      let new_subscribers = list.filter(state.subscribers, fn(s) { s.id != id })
+
+      // Disconnect from source if this was the last subscriber
+      let new_source_disp = case new_subscribers {
+        [] -> {
+          case state.source_disposable {
+            Some(Disposable(dispose)) -> {
+              dispose()
+              None
+            }
+            None -> None
+          }
+        }
+        _ -> state.source_disposable
+      }
+
+      share_loop(
+        control,
+        source,
+        ShareState(..state, subscribers: new_subscribers, source_disposable: new_source_disp),
+      )
+    }
+    ShareNotify(n) -> {
+      // Broadcast to all subscribers
+      list.each(state.subscribers, fn(s) {
+        let Observer(notify) = s.observer
+        notify(n)
+      })
+      // On terminal, keep looping but mark as terminated
+      case n {
+        OnCompleted -> {
+          let new_state =
+            ShareState(..state, terminal: Some(n), source_disposable: None)
+          share_loop(control, source, new_state)
+        }
+        OnError(_) -> {
+          let new_state =
+            ShareState(..state, terminal: Some(n), source_disposable: None)
+          share_loop(control, source, new_state)
+        }
+        OnNext(_) -> share_loop(control, source, state)
+      }
+    }
+  }
 }

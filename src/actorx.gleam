@@ -28,6 +28,7 @@
 
 import actorx/combine
 import actorx/create
+import actorx/error
 import actorx/filter
 import actorx/subject
 import actorx/timeshift
@@ -178,6 +179,63 @@ pub fn concat_map(
   transform.concat_map(source, mapper)
 }
 
+/// Applies an accumulator function over the source, emitting each
+/// intermediate result.
+///
+/// ## Example
+/// ```gleam
+/// from_list([1, 2, 3, 4, 5])
+/// |> scan(0, fn(acc, x) { acc + x })
+/// // Emits: 1, 3, 6, 10, 15
+/// ```
+pub fn scan(
+  source: types.Observable(a),
+  initial: b,
+  accumulator: fn(b, a) -> b,
+) -> types.Observable(b) {
+  transform.scan(source, initial, accumulator)
+}
+
+/// Applies an accumulator function over the source, emitting only
+/// the final accumulated value when the source completes.
+///
+/// ## Example
+/// ```gleam
+/// from_list([1, 2, 3, 4, 5])
+/// |> reduce(0, fn(acc, x) { acc + x })
+/// // Emits: 15, then completes
+/// ```
+pub fn reduce(
+  source: types.Observable(a),
+  initial: b,
+  accumulator: fn(b, a) -> b,
+) -> types.Observable(b) {
+  transform.reduce(source, initial, accumulator)
+}
+
+/// Groups elements by key, returning an observable of grouped observables.
+///
+/// Each time a new key is encountered, emits a tuple of (key, Observable).
+/// All elements with that key are forwarded to the corresponding group's
+/// observable.
+///
+/// ## Example
+/// ```gleam
+/// // Group numbers by even/odd
+/// from_list([1, 2, 3, 4, 5, 6])
+/// |> group_by(fn(x) { x % 2 })
+/// |> flat_map(fn(group) {
+///   let #(key, values) = group
+///   values |> map(fn(v) { #(key, v) })
+/// })
+/// ```
+pub fn group_by(
+  source: types.Observable(a),
+  key_selector: fn(a) -> k,
+) -> types.Observable(#(k, types.Observable(a))) {
+  transform.group_by(source, key_selector)
+}
+
 // ============================================================================
 // Filter operators
 // ============================================================================
@@ -308,6 +366,55 @@ pub fn single_subject() -> #(types.Observer(a), types.Observable(a)) {
   subject.single_subject()
 }
 
+/// Converts a cold observable into a connectable hot observable.
+///
+/// Returns a tuple of (Observable, connect_fn) where:
+/// - The Observable can be subscribed to by multiple observers
+/// - The connect function starts the source subscription
+///
+/// Values are only emitted after connect() is called. Multiple subscribers
+/// share the same source subscription.
+///
+/// ## Example
+/// ```gleam
+/// let #(hot, connect) = publish(cold_source)
+///
+/// // Subscribe multiple observers (source not started yet)
+/// let _d1 = hot |> actorx.subscribe(observer1)
+/// let _d2 = hot |> actorx.subscribe(observer2)
+///
+/// // Now connect - source starts, both observers receive values
+/// let connection = connect()
+/// ```
+pub fn publish(
+  source: types.Observable(a),
+) -> #(types.Observable(a), fn() -> types.Disposable) {
+  subject.publish(source)
+}
+
+/// Shares a single subscription to the source among multiple subscribers.
+///
+/// Automatically connects when the first subscriber subscribes,
+/// and disconnects when the last subscriber unsubscribes.
+///
+/// This is equivalent to `publish(source)` with automatic reference counting.
+///
+/// ## Example
+/// ```gleam
+/// let shared =
+///   interval(100)
+///   |> share()
+///
+/// // First subscriber - source starts
+/// let d1 = shared |> actorx.subscribe(observer1)
+///
+/// // Second subscriber - shares same source
+/// let d2 = shared |> actorx.subscribe(observer2)
+/// ```
+pub fn share(source: types.Observable(a)) -> types.Observable(a) {
+  subject.share(source)
+}
+
 // ============================================================================
 // Combining operators
 // ============================================================================
@@ -358,4 +465,40 @@ pub fn zip(
   combiner: fn(a, b) -> c,
 ) -> types.Observable(c) {
   combine.zip(source1, source2, combiner)
+}
+
+// ============================================================================
+// Error handling operators
+// ============================================================================
+
+/// Resubscribes to the source observable when an error occurs,
+/// up to the specified number of retries.
+///
+/// ## Example
+/// ```gleam
+/// // Retry up to 3 times on error
+/// flaky_observable
+/// |> retry(3)
+/// ```
+pub fn retry(
+  source: types.Observable(a),
+  max_retries: Int,
+) -> types.Observable(a) {
+  error.retry(source, max_retries)
+}
+
+/// On error, switches to a fallback observable returned by the handler.
+/// Also known as `catch_error` or `on_error_resume_next`.
+///
+/// ## Example
+/// ```gleam
+/// // On error, emit a default value
+/// risky_observable
+/// |> catch(fn(_error) { single(default_value) })
+/// ```
+pub fn catch(
+  source: types.Observable(a),
+  handler: fn(String) -> types.Observable(a),
+) -> types.Observable(a) {
+  error.catch(source, handler)
 }

@@ -147,11 +147,14 @@ A `Disposable` represents a subscription that can be cancelled. Call `dispose()`
 
 ### Transform
 
-|         Operator         |                  Description                  |
-| ------------------------ | --------------------------------------------- |
-| `map(source, fn)`        | Transform each element                        |
-| `flat_map(source, fn)`   | Map to observables, merge results (actor-based) |
-| `concat_map(source, fn)` | Map to observables, concatenate in order      |
+|          Operator           |                   Description                   |
+| --------------------------- | ----------------------------------------------- |
+| `map(source, fn)`           | Transform each element                          |
+| `flat_map(source, fn)`      | Map to observables, merge results (actor-based) |
+| `concat_map(source, fn)`    | Map to observables, concatenate in order        |
+| `scan(source, init, fn)`    | Running accumulation, emit each step            |
+| `reduce(source, init, fn)`  | Final accumulation, emit on completion          |
+| `group_by(source, fn)`      | Group elements into sub-observables by key      |
 
 ### Filter
 
@@ -183,6 +186,8 @@ A `Disposable` represents a subscription that can be cancelled. Call `dispose()`
 | ------------------ | --------------------------------------------------- |
 | `subject()`        | Multicast subject, allows multiple subscribers      |
 | `single_subject()` | Single-subscriber subject, buffers until subscribed |
+| `publish(source)`  | Connectable hot observable, call connect() to start |
+| `share(source)`    | Auto-connecting multicast, refCount semantics       |
 
 ### Combine
 
@@ -193,6 +198,13 @@ A `Disposable` represents a subscription that can be cancelled. Call `dispose()`
 | `combine_latest(s1, s2, fn)`        | Combine latest values from two sources             |
 | `with_latest_from(source, s2, fn)`  | Sample source with latest from another             |
 | `zip(source1, source2, fn)`         | Pair elements by index                             |
+
+### Error Handling
+
+|        Operator         |                  Description                   |
+| ----------------------- | ---------------------------------------------- |
+| `retry(source, n)`      | Resubscribe on error, up to N retries          |
+| `catch(source, fn)`     | On error, switch to fallback from handler      |
 
 ### Builder (for `use` syntax)
 
@@ -292,14 +304,13 @@ The `safe_observer` module provides Rx grammar enforcement:
 - [x] `with_latest_from` - Sample with latest
 - [x] `zip` - Pair elements by index
 
-### Phase 4: Advanced Features
+### Phase 4: Advanced Features ✓
 
 - [x] `subject` - Multicast hot observable
-- [ ] `share` / `publish` - Share subscriptions
-- [ ] `retry` / `catch` - Error handling
-- [ ] `scan` / `reduce` - Aggregation
-- [ ] `group_by` - Grouped streams
-- [ ] Back-pressure support
+- [x] `scan` / `reduce` - Aggregation
+- [x] `retry` / `catch` - Error handling
+- [x] `share` / `publish` - Share subscriptions
+- [x] `group_by` - Grouped streams
 
 ### Phase 5: Integration
 

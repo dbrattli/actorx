@@ -358,3 +358,149 @@ pub fn concat_map_vs_flat_map_order_test() {
   // flat_map has same elements but order may differ
   list.length(values1) |> should.equal(6)
 }
+
+// ============================================================================
+// mapi tests
+// ============================================================================
+
+pub fn mapi_basic_test() {
+  let result: Subject(Notification(#(Int, String))) = process.new_subject()
+
+  let _ =
+    actorx.from_list(["a", "b", "c"])
+    |> actorx.mapi(fn(x, i) { #(i, x) })
+    |> actorx.subscribe(message_observer(result))
+
+  let #(values, completed, _) = collect_messages(result, 100)
+
+  values |> should.equal([#(0, "a"), #(1, "b"), #(2, "c")])
+  completed |> should.be_true()
+}
+
+pub fn mapi_empty_test() {
+  let result: Subject(Notification(#(Int, Int))) = process.new_subject()
+
+  let _ =
+    actorx.empty()
+    |> actorx.mapi(fn(x: Int, i) { #(i, x) })
+    |> actorx.subscribe(message_observer(result))
+
+  let #(values, completed, _) = collect_messages(result, 100)
+
+  values |> should.equal([])
+  completed |> should.be_true()
+}
+
+pub fn mapi_index_starts_at_zero_test() {
+  let result: Subject(Notification(Int)) = process.new_subject()
+
+  let _ =
+    actorx.from_list([100, 200, 300])
+    |> actorx.mapi(fn(_x, i) { i })
+    |> actorx.subscribe(message_observer(result))
+
+  let #(values, completed, _) = collect_messages(result, 100)
+
+  values |> should.equal([0, 1, 2])
+  completed |> should.be_true()
+}
+
+// ============================================================================
+// flat_mapi tests
+// ============================================================================
+
+pub fn flat_mapi_basic_test() {
+  let result: Subject(Notification(#(Int, String))) = process.new_subject()
+
+  let _ =
+    actorx.from_list(["a", "b"])
+    |> actorx.flat_mapi(fn(x, i) { actorx.from_list([#(i, x), #(i, x <> "!")]) })
+    |> actorx.subscribe(message_observer(result))
+
+  let #(values, completed, _) = collect_messages(result, 100)
+
+  // Should have 4 values total
+  list.length(values) |> should.equal(4)
+  completed |> should.be_true()
+}
+
+pub fn flat_mapi_is_mapi_plus_merge_inner_test() {
+  let result1: Subject(Notification(#(Int, Int))) = process.new_subject()
+  let result2: Subject(Notification(#(Int, Int))) = process.new_subject()
+
+  let source = actorx.from_list([10, 20, 30])
+  let mapper = fn(x, i) { actorx.from_list([#(i, x), #(i, x + 1)]) }
+
+  // Using flat_mapi directly
+  let _ =
+    source
+    |> actorx.flat_mapi(mapper)
+    |> actorx.subscribe(message_observer(result1))
+
+  // Using mapi + merge_inner (should be equivalent)
+  let _ =
+    source
+    |> actorx.mapi(mapper)
+    |> actorx.merge_inner()
+    |> actorx.subscribe(message_observer(result2))
+
+  let #(values1, completed1, _) = collect_messages(result1, 100)
+  let #(values2, completed2, _) = collect_messages(result2, 100)
+
+  // Both should have same number of elements
+  list.length(values1) |> should.equal(list.length(values2))
+  completed1 |> should.be_true()
+  completed2 |> should.be_true()
+}
+
+// ============================================================================
+// concat_mapi tests
+// ============================================================================
+
+pub fn concat_mapi_basic_test() {
+  let result: Subject(Notification(#(Int, String))) = process.new_subject()
+
+  let _ =
+    actorx.from_list(["a", "b"])
+    |> actorx.concat_mapi(fn(x, i) {
+      actorx.from_list([#(i, x), #(i, x <> "!")])
+    })
+    |> actorx.subscribe(message_observer(result))
+
+  let #(values, completed, _) = collect_messages(result, 100)
+
+  // concat_mapi preserves strict order
+  values
+  |> should.equal([#(0, "a"), #(0, "a!"), #(1, "b"), #(1, "b!")])
+  completed |> should.be_true()
+}
+
+pub fn concat_mapi_is_mapi_plus_concat_inner_test() {
+  let result1: Subject(Notification(#(Int, Int))) = process.new_subject()
+  let result2: Subject(Notification(#(Int, Int))) = process.new_subject()
+
+  let source = actorx.from_list([10, 20])
+  let mapper = fn(x, i) { actorx.from_list([#(i, x), #(i, x + 1)]) }
+
+  // Using concat_mapi directly
+  let _ =
+    source
+    |> actorx.concat_mapi(mapper)
+    |> actorx.subscribe(message_observer(result1))
+
+  // Using mapi + concat_inner (should be equivalent)
+  let _ =
+    source
+    |> actorx.mapi(mapper)
+    |> actorx.concat_inner()
+    |> actorx.subscribe(message_observer(result2))
+
+  let #(values1, completed1, _) = collect_messages(result1, 100)
+  let #(values2, completed2, _) = collect_messages(result2, 100)
+
+  // Both should produce same results in same order
+  values1 |> should.equal([#(0, 10), #(0, 11), #(1, 20), #(1, 21)])
+  values2 |> should.equal([#(0, 10), #(0, 11), #(1, 20), #(1, 21)])
+  completed1 |> should.be_true()
+  completed2 |> should.be_true()
+}

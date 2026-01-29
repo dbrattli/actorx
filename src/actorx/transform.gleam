@@ -1,9 +1,9 @@
 //// Transform operators for ActorX
 ////
 //// These operators transform the elements of an observable sequence:
-//// - map: Apply a function to each element
-//// - flat_map: Map to observables and flatten (= map + merge_inner)
-//// - concat_map: Map to observables and concatenate (= map + concat_inner)
+//// - map/mapi: Apply a function to each element (with optional index)
+//// - flat_map/flat_mapi: Map to observables and flatten (= mapi + merge_inner)
+//// - concat_map/concat_mapi: Map to observables and concatenate (= mapi + concat_inner)
 //// - merge_inner: Flatten Observable(Observable(a)) by merging
 //// - concat_inner: Flatten Observable(Observable(a)) by concatenating
 //// - scan: Running accumulation
@@ -36,6 +36,96 @@ pub fn map(source: Observable(a), mapper: fn(a) -> b) -> Observable(b) {
     let Observable(subscribe) = source
     subscribe(upstream_observer)
   })
+}
+
+// ============================================================================
+// mapi - Map with index
+// ============================================================================
+
+/// Messages for the mapi actor
+type MapiMsg(a) {
+  MapiNext(a)
+  MapiError(String)
+  MapiCompleted
+  MapiDispose
+}
+
+/// Returns an observable whose elements are the result of invoking
+/// the mapper function on each element and its index.
+///
+/// ## Example
+/// ```gleam
+/// from_list(["a", "b", "c"])
+/// |> mapi(fn(x, i) { #(i, x) })
+/// // Emits: #(0, "a"), #(1, "b"), #(2, "c")
+/// ```
+pub fn mapi(source: Observable(a), mapper: fn(a, Int) -> b) -> Observable(b) {
+  Observable(subscribe: fn(observer: Observer(b)) {
+    let Observer(downstream) = observer
+
+    // Create control channel
+    let control_ready: Subject(Subject(MapiMsg(a))) = process.new_subject()
+
+    // Spawn actor to track index
+    process.spawn(fn() {
+      let control: Subject(MapiMsg(a)) = process.new_subject()
+      process.send(control_ready, control)
+      mapi_loop(control, downstream, mapper, 0)
+    })
+
+    // Get control subject
+    let control = case process.receive(control_ready, 1000) {
+      Ok(s) -> s
+      Error(_) -> panic as "Failed to create mapi actor"
+    }
+
+    // Subscribe to source
+    let source_observer =
+      Observer(notify: fn(n) {
+        case n {
+          OnNext(x) -> process.send(control, MapiNext(x))
+          OnError(e) -> process.send(control, MapiError(e))
+          OnCompleted -> process.send(control, MapiCompleted)
+        }
+      })
+
+    let Observable(subscribe) = source
+    let source_disp = subscribe(source_observer)
+
+    Disposable(dispose: fn() {
+      let Disposable(dispose_source) = source_disp
+      dispose_source()
+      process.send(control, MapiDispose)
+      Nil
+    })
+  })
+}
+
+fn mapi_loop(
+  control: Subject(MapiMsg(a)),
+  downstream: fn(Notification(b)) -> Nil,
+  mapper: fn(a, Int) -> b,
+  index: Int,
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    MapiNext(x) -> {
+      downstream(OnNext(mapper(x, index)))
+      mapi_loop(control, downstream, mapper, index + 1)
+    }
+    MapiError(e) -> {
+      downstream(OnError(e))
+      Nil
+    }
+    MapiCompleted -> {
+      downstream(OnCompleted)
+      Nil
+    }
+    MapiDispose -> Nil
+  }
 }
 
 // ============================================================================
@@ -447,6 +537,53 @@ pub fn concat_map(
 ) -> Observable(b) {
   source
   |> map(mapper)
+  |> concat_inner()
+}
+
+// ============================================================================
+// flat_mapi - Composed from mapi + merge_inner
+// ============================================================================
+
+/// Projects each element and its index into an observable and merges results.
+///
+/// This is composed from `mapi` and `merge_inner`:
+/// `flat_mapi(source, f) = source |> mapi(f) |> merge_inner()`
+///
+/// ## Example
+/// ```gleam
+/// from_list(["a", "b", "c"])
+/// |> flat_mapi(fn(x, i) { from_list([#(i, x), #(i, x <> "!")]) })
+/// ```
+pub fn flat_mapi(
+  source: Observable(a),
+  mapper: fn(a, Int) -> Observable(b),
+) -> Observable(b) {
+  source
+  |> mapi(mapper)
+  |> merge_inner()
+}
+
+// ============================================================================
+// concat_mapi - Composed from mapi + concat_inner
+// ============================================================================
+
+/// Projects each element and its index into an observable and concatenates in order.
+///
+/// This is composed from `mapi` and `concat_inner`:
+/// `concat_mapi(source, f) = source |> mapi(f) |> concat_inner()`
+///
+/// ## Example
+/// ```gleam
+/// from_list(["a", "b"])
+/// |> concat_mapi(fn(x, i) { from_list([#(i, x), #(i, x <> "!")]) })
+/// // Emits: #(0, "a"), #(0, "a!"), #(1, "b"), #(1, "b!")
+/// ```
+pub fn concat_mapi(
+  source: Observable(a),
+  mapper: fn(a, Int) -> Observable(b),
+) -> Observable(b) {
+  source
+  |> mapi(mapper)
   |> concat_inner()
 }
 

@@ -150,8 +150,11 @@ A `Disposable` represents a subscription that can be cancelled. Call `dispose()`
 | Operator | Description |
 | --- | --- |
 | `map(source, fn)` | Transform each element |
+| `mapi(source, fn)` | Transform with index: `fn(a, Int) -> b` |
 | `flat_map(source, fn)` | Map to observables, merge results (= map + merge_inner) |
+| `flat_mapi(source, fn)` | Map with index to observables, merge (= mapi + merge_inner) |
 | `concat_map(source, fn)` | Map to observables, concatenate in order (= map + concat_inner) |
+| `concat_mapi(source, fn)` | Map with index to observables, concatenate (= mapi + concat_inner) |
 | `merge_inner(source)` | Flatten Observable(Observable(a)) by merging |
 | `concat_inner(source)` | Flatten Observable(Observable(a)) in order |
 | `scan(source, init, fn)` | Running accumulation, emit each step |

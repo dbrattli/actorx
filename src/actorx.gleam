@@ -159,6 +159,21 @@ pub fn map(
   transform.map(source, mapper)
 }
 
+/// Transform each element using a mapper function that also receives the index.
+///
+/// ## Example
+/// ```gleam
+/// from_list(["a", "b", "c"])
+/// |> mapi(fn(x, i) { #(i, x) })
+/// // Emits: #(0, "a"), #(1, "b"), #(2, "c")
+/// ```
+pub fn mapi(
+  source: types.Observable(a),
+  mapper: fn(a, Int) -> b,
+) -> types.Observable(b) {
+  transform.mapi(source, mapper)
+}
+
 /// Project each element to an observable and flatten.
 ///
 /// Composed from `map` and `merge_inner`:
@@ -168,6 +183,17 @@ pub fn flat_map(
   mapper: fn(a) -> types.Observable(b),
 ) -> types.Observable(b) {
   transform.flat_map(source, mapper)
+}
+
+/// Project each element and its index to an observable and flatten.
+///
+/// Composed from `mapi` and `merge_inner`:
+/// `flat_mapi(source, f) = source |> mapi(f) |> merge_inner()`
+pub fn flat_mapi(
+  source: types.Observable(a),
+  mapper: fn(a, Int) -> types.Observable(b),
+) -> types.Observable(b) {
+  transform.flat_mapi(source, mapper)
 }
 
 /// Project each element to an observable and concatenate in order.
@@ -181,6 +207,17 @@ pub fn concat_map(
   mapper: fn(a) -> types.Observable(b),
 ) -> types.Observable(b) {
   transform.concat_map(source, mapper)
+}
+
+/// Project each element and its index to an observable and concatenate in order.
+///
+/// Composed from `mapi` and `concat_inner`:
+/// `concat_mapi(source, f) = source |> mapi(f) |> concat_inner()`
+pub fn concat_mapi(
+  source: types.Observable(a),
+  mapper: fn(a, Int) -> types.Observable(b),
+) -> types.Observable(b) {
+  transform.concat_mapi(source, mapper)
 }
 
 /// Flattens an Observable of Observables by merging inner emissions.

@@ -15,6 +15,7 @@ import actorx/types.{
   Observer, OnCompleted, OnError, OnNext,
 }
 import gleam/erlang/process.{type Subject, type Timer}
+import gleam/int
 import gleam/option.{type Option, None, Some}
 
 // ============================================================================
@@ -605,5 +606,144 @@ fn throttle_worker_loop(
     }
     ThrottleError(e) -> downstream(OnError(e))
     ThrottleDispose -> Nil
+  }
+}
+
+// ============================================================================
+// timeout - Error if no emission within time period
+// ============================================================================
+
+/// Messages for the timeout actor
+type TimeoutMsg(a) {
+  TimeoutNext(a)
+  TimeoutError(String)
+  TimeoutCompleted
+  TimeoutTick
+  TimeoutDispose
+}
+
+/// Errors if no emission occurs within the specified timeout period.
+///
+/// The timeout resets after each emission. If the source doesn't emit
+/// within the timeout, an error is raised.
+///
+/// ## Example
+/// ```gleam
+/// slow_source
+/// |> timeout(5000)  // Error if no emission within 5 seconds
+/// ```
+pub fn timeout(source: Observable(a), ms: Int) -> Observable(a) {
+  Observable(subscribe: fn(observer: Observer(a)) {
+    let Observer(downstream) = observer
+
+    // Create control subject
+    let control_ready: Subject(Subject(TimeoutMsg(a))) = process.new_subject()
+
+    // Spawn worker that manages timeout
+    process.spawn(fn() {
+      let control: Subject(TimeoutMsg(a)) = process.new_subject()
+      process.send(control_ready, control)
+
+      // Start initial timeout
+      let timer = process.send_after(control, ms, TimeoutTick)
+      timeout_loop(control, ms, downstream, Some(timer))
+    })
+
+    // Get control subject
+    let control = case process.receive(control_ready, 1000) {
+      Ok(s) -> s
+      Error(_) -> panic as "Failed to create timeout"
+    }
+
+    // Subscribe to source
+    let source_observer =
+      Observer(notify: fn(n) {
+        case n {
+          OnNext(x) -> process.send(control, TimeoutNext(x))
+          OnError(e) -> process.send(control, TimeoutError(e))
+          OnCompleted -> process.send(control, TimeoutCompleted)
+        }
+      })
+
+    let Observable(subscribe) = source
+    let source_disp = subscribe(source_observer)
+
+    Disposable(dispose: fn() {
+      let Disposable(dispose_source) = source_disp
+      dispose_source()
+      process.send(control, TimeoutDispose)
+      Nil
+    })
+  })
+}
+
+fn timeout_loop(
+  control: Subject(TimeoutMsg(a)),
+  ms: Int,
+  downstream: fn(Notification(a)) -> Nil,
+  timer: Option(process.Timer),
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    TimeoutNext(x) -> {
+      // Cancel current timer
+      case timer {
+        Some(t) -> {
+          let _ = process.cancel_timer(t)
+          Nil
+        }
+        None -> Nil
+      }
+
+      // Emit value
+      downstream(OnNext(x))
+
+      // Start new timeout
+      let new_timer = process.send_after(control, ms, TimeoutTick)
+      timeout_loop(control, ms, downstream, Some(new_timer))
+    }
+    TimeoutTick -> {
+      // Timeout expired - error
+      downstream(OnError("Timeout: no emission within " <> int.to_string(ms) <> "ms"))
+      Nil
+    }
+    TimeoutError(e) -> {
+      // Cancel timer
+      case timer {
+        Some(t) -> {
+          let _ = process.cancel_timer(t)
+          Nil
+        }
+        None -> Nil
+      }
+      downstream(OnError(e))
+      Nil
+    }
+    TimeoutCompleted -> {
+      // Cancel timer
+      case timer {
+        Some(t) -> {
+          let _ = process.cancel_timer(t)
+          Nil
+        }
+        None -> Nil
+      }
+      downstream(OnCompleted)
+      Nil
+    }
+    TimeoutDispose -> {
+      // Cancel timer
+      case timer {
+        Some(t) -> {
+          let _ = process.cancel_timer(t)
+          Nil
+        }
+        None -> Nil
+      }
+      Nil
+    }
   }
 }

@@ -1120,6 +1120,103 @@ fn sample_loop(
 }
 
 // ============================================================================
+// distinct - Filter all duplicates (not just consecutive)
+// ============================================================================
+
+/// Messages for the distinct (all) actor
+type DistinctAllMsg(a) {
+  DistinctAllNext(a)
+  DistinctAllError(String)
+  DistinctAllCompleted
+  DistinctAllDispose
+}
+
+/// Filters out all duplicate values, not just consecutive ones.
+///
+/// Uses a list to track seen values. For large streams, consider using
+/// `distinct_until_changed` which only tracks the previous value.
+///
+/// ## Example
+/// ```gleam
+/// from_list([1, 2, 1, 3, 2, 4, 1])
+/// |> distinct()
+/// // Emits: 1, 2, 3, 4
+/// ```
+pub fn distinct(source: Observable(a)) -> Observable(a) {
+  Observable(subscribe: fn(observer: Observer(a)) {
+    let Observer(downstream) = observer
+
+    // Create control channel
+    let control_ready: Subject(Subject(DistinctAllMsg(a))) =
+      process.new_subject()
+
+    // Spawn actor
+    process.spawn(fn() {
+      let control: Subject(DistinctAllMsg(a)) = process.new_subject()
+      process.send(control_ready, control)
+      distinct_all_loop(control, downstream, [])
+    })
+
+    // Get control subject
+    let control = case process.receive(control_ready, 1000) {
+      Ok(s) -> s
+      Error(_) -> panic as "Failed to create distinct actor"
+    }
+
+    // Subscribe to source
+    let source_observer =
+      Observer(notify: fn(n) {
+        case n {
+          OnNext(x) -> process.send(control, DistinctAllNext(x))
+          OnError(e) -> process.send(control, DistinctAllError(e))
+          OnCompleted -> process.send(control, DistinctAllCompleted)
+        }
+      })
+
+    let Observable(subscribe) = source
+    let source_disp = subscribe(source_observer)
+
+    Disposable(dispose: fn() {
+      let Disposable(dispose_source) = source_disp
+      dispose_source()
+      process.send(control, DistinctAllDispose)
+      Nil
+    })
+  })
+}
+
+fn distinct_all_loop(
+  control: Subject(DistinctAllMsg(a)),
+  downstream: fn(types.Notification(a)) -> Nil,
+  seen: List(a),
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    DistinctAllNext(x) -> {
+      case list.contains(seen, x) {
+        True -> distinct_all_loop(control, downstream, seen)
+        False -> {
+          downstream(OnNext(x))
+          distinct_all_loop(control, downstream, [x, ..seen])
+        }
+      }
+    }
+    DistinctAllError(e) -> {
+      downstream(OnError(e))
+      Nil
+    }
+    DistinctAllCompleted -> {
+      downstream(OnCompleted)
+      Nil
+    }
+    DistinctAllDispose -> Nil
+  }
+}
+
+// ============================================================================
 // Helper functions
 // ============================================================================
 

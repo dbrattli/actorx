@@ -446,6 +446,11 @@ pub fn sample(
   filter.sample(source, sampler)
 }
 
+/// Filter out all duplicate values (not just consecutive).
+pub fn distinct(source: types.Observable(a)) -> types.Observable(a) {
+  filter.distinct(source)
+}
+
 // ============================================================================
 // Utility
 // ============================================================================
@@ -484,6 +489,12 @@ pub fn debounce(source: types.Observable(a), ms: Int) -> types.Observable(a) {
 /// Rate limits emissions to at most one per specified period.
 pub fn throttle(source: types.Observable(a), ms: Int) -> types.Observable(a) {
   timeshift.throttle(source, ms)
+}
+
+/// Errors if no emission occurs within the specified timeout period.
+/// The timeout resets after each emission.
+pub fn timeout(source: types.Observable(a), ms: Int) -> types.Observable(a) {
+  timeshift.timeout(source, ms)
 }
 
 // ============================================================================
@@ -623,6 +634,24 @@ pub fn concat2(
   source2: types.Observable(a),
 ) -> types.Observable(a) {
   combine.concat2(source1, source2)
+}
+
+/// Returns the observable that emits first.
+/// Also known as `race`. Other sources are ignored after one emits.
+pub fn amb(sources: List(types.Observable(a))) -> types.Observable(a) {
+  combine.amb(sources)
+}
+
+/// Alias for `amb` - returns the observable that emits first.
+pub fn race(sources: List(types.Observable(a))) -> types.Observable(a) {
+  combine.race(sources)
+}
+
+/// Waits for all observables to complete, then emits list of their last values.
+pub fn fork_join(
+  sources: List(types.Observable(a)),
+) -> types.Observable(List(a)) {
+  combine.fork_join(sources)
 }
 
 // ============================================================================

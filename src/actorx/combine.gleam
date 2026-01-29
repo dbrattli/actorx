@@ -778,3 +778,337 @@ fn concat_source_loop(
 pub fn concat2(source1: Observable(a), source2: Observable(a)) -> Observable(a) {
   concat([source1, source2])
 }
+
+// ============================================================================
+// amb / race - First source to emit wins
+// ============================================================================
+
+/// Messages for the amb actor
+type AmbMsg(a) {
+  AmbNext(a, Int)
+  AmbError(String, Int)
+  AmbCompleted(Int)
+  AmbDispose
+}
+
+/// State for amb actor
+type AmbState {
+  AmbState(winner: Option(Int), total: Int, completed_count: Int)
+}
+
+/// Returns the observable that emits first.
+///
+/// Once any source emits a value, that source "wins" and all other
+/// sources are ignored. Also known as `race`.
+///
+/// ## Example
+/// ```gleam
+/// amb([
+///   timer(100) |> map(fn(_) { "slow" }),
+///   timer(50) |> map(fn(_) { "fast" }),
+/// ])
+/// // Emits: "fast", then completes
+/// ```
+pub fn amb(sources: List(Observable(a))) -> Observable(a) {
+  Observable(subscribe: fn(observer: Observer(a)) {
+    let Observer(downstream) = observer
+
+    case sources {
+      [] -> {
+        downstream(OnCompleted)
+        Disposable(dispose: fn() { Nil })
+      }
+      _ -> {
+        // Create control channel
+        let control_ready: Subject(Subject(AmbMsg(a))) = process.new_subject()
+
+        // Spawn actor
+        process.spawn(fn() {
+          let control: Subject(AmbMsg(a)) = process.new_subject()
+          process.send(control_ready, control)
+          let initial_state =
+            AmbState(
+              winner: None,
+              total: list.length(sources),
+              completed_count: 0,
+            )
+          amb_loop(control, downstream, initial_state)
+        })
+
+        // Get control subject
+        let control = case process.receive(control_ready, 1000) {
+          Ok(s) -> s
+          Error(_) -> panic as "Failed to create amb actor"
+        }
+
+        // Subscribe to all sources with their index
+        let disposables =
+          list.index_map(sources, fn(source, idx) {
+            let source_observer =
+              Observer(notify: fn(n) {
+                case n {
+                  OnNext(x) -> process.send(control, AmbNext(x, idx))
+                  OnError(e) -> process.send(control, AmbError(e, idx))
+                  OnCompleted -> process.send(control, AmbCompleted(idx))
+                }
+              })
+
+            let Observable(subscribe) = source
+            subscribe(source_observer)
+          })
+
+        Disposable(dispose: fn() {
+          list.each(disposables, fn(d) {
+            let Disposable(dispose) = d
+            dispose()
+          })
+          process.send(control, AmbDispose)
+          Nil
+        })
+      }
+    }
+  })
+}
+
+fn amb_loop(
+  control: Subject(AmbMsg(a)),
+  downstream: fn(types.Notification(a)) -> Nil,
+  state: AmbState,
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    AmbNext(value, idx) -> {
+      case state.winner {
+        None -> {
+          // First to emit - this source wins
+          downstream(OnNext(value))
+          amb_loop(
+            control,
+            downstream,
+            AmbState(..state, winner: Some(idx)),
+          )
+        }
+        Some(winner_idx) -> {
+          // Only forward from winner
+          case idx == winner_idx {
+            True -> {
+              downstream(OnNext(value))
+              amb_loop(control, downstream, state)
+            }
+            False -> amb_loop(control, downstream, state)
+          }
+        }
+      }
+    }
+    AmbError(e, idx) -> {
+      case state.winner {
+        None -> {
+          // First to emit (error) - propagate
+          downstream(OnError(e))
+          Nil
+        }
+        Some(winner_idx) -> {
+          case idx == winner_idx {
+            True -> {
+              downstream(OnError(e))
+              Nil
+            }
+            False -> amb_loop(control, downstream, state)
+          }
+        }
+      }
+    }
+    AmbCompleted(idx) -> {
+      case state.winner {
+        None -> {
+          // Source completed without emitting - track it
+          let new_count = state.completed_count + 1
+          case new_count >= state.total {
+            True -> {
+              // All completed without emitting
+              downstream(OnCompleted)
+              Nil
+            }
+            False ->
+              amb_loop(
+                control,
+                downstream,
+                AmbState(..state, completed_count: new_count),
+              )
+          }
+        }
+        Some(winner_idx) -> {
+          case idx == winner_idx {
+            True -> {
+              downstream(OnCompleted)
+              Nil
+            }
+            False -> amb_loop(control, downstream, state)
+          }
+        }
+      }
+    }
+    AmbDispose -> Nil
+  }
+}
+
+/// Alias for `amb` - returns the observable that emits first.
+pub fn race(sources: List(Observable(a))) -> Observable(a) {
+  amb(sources)
+}
+
+// ============================================================================
+// fork_join - Wait for all to complete, emit last values
+// ============================================================================
+
+/// Messages for the fork_join actor
+type ForkJoinMsg(a) {
+  ForkJoinNext(a, Int)
+  ForkJoinError(String)
+  ForkJoinCompleted(Int)
+  ForkJoinDispose
+}
+
+/// Waits for all observables to complete, then emits a list of their last values.
+///
+/// If any source errors, the error is propagated immediately.
+/// If any source completes without emitting, an error is raised.
+///
+/// ## Example
+/// ```gleam
+/// fork_join([
+///   from_list([1, 2, 3]),   // last: 3
+///   from_list([4, 5]),       // last: 5
+///   single(6),               // last: 6
+/// ])
+/// // Emits: [3, 5, 6], then completes
+/// ```
+pub fn fork_join(sources: List(Observable(a))) -> Observable(List(a)) {
+  Observable(subscribe: fn(observer: Observer(List(a))) {
+    let Observer(downstream) = observer
+
+    case sources {
+      [] -> {
+        downstream(OnNext([]))
+        downstream(OnCompleted)
+        Disposable(dispose: fn() { Nil })
+      }
+      _ -> {
+        let total = list.length(sources)
+
+        // Create control channel
+        let control_ready: Subject(Subject(ForkJoinMsg(a))) =
+          process.new_subject()
+
+        // Spawn actor
+        process.spawn(fn() {
+          let control: Subject(ForkJoinMsg(a)) = process.new_subject()
+          process.send(control_ready, control)
+          // Initialize with None for each source
+          let initial_values = list.repeat(None, total)
+          fork_join_loop(control, downstream, initial_values, 0, total)
+        })
+
+        // Get control subject
+        let control = case process.receive(control_ready, 1000) {
+          Ok(s) -> s
+          Error(_) -> panic as "Failed to create fork_join actor"
+        }
+
+        // Subscribe to all sources
+        let disposables =
+          list.index_map(sources, fn(source, idx) {
+            let source_observer =
+              Observer(notify: fn(n) {
+                case n {
+                  OnNext(x) -> process.send(control, ForkJoinNext(x, idx))
+                  OnError(e) -> process.send(control, ForkJoinError(e))
+                  OnCompleted -> process.send(control, ForkJoinCompleted(idx))
+                }
+              })
+
+            let Observable(subscribe) = source
+            subscribe(source_observer)
+          })
+
+        Disposable(dispose: fn() {
+          list.each(disposables, fn(d) {
+            let Disposable(dispose) = d
+            dispose()
+          })
+          process.send(control, ForkJoinDispose)
+          Nil
+        })
+      }
+    }
+  })
+}
+
+fn fork_join_loop(
+  control: Subject(ForkJoinMsg(a)),
+  downstream: fn(types.Notification(List(a))) -> Nil,
+  values: List(Option(a)),
+  completed_count: Int,
+  total: Int,
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    ForkJoinNext(value, idx) -> {
+      // Update the value at index
+      let new_values = list_set_at(values, idx, Some(value))
+      fork_join_loop(control, downstream, new_values, completed_count, total)
+    }
+    ForkJoinError(e) -> {
+      downstream(OnError(e))
+      Nil
+    }
+    ForkJoinCompleted(_idx) -> {
+      let new_count = completed_count + 1
+      case new_count >= total {
+        True -> {
+          // All completed - check if all have values
+          let result = collect_all_values(values, [])
+          case result {
+            Ok(final_values) -> {
+              downstream(OnNext(final_values))
+              downstream(OnCompleted)
+              Nil
+            }
+            Error(_) -> {
+              downstream(OnError("fork_join: source completed without emitting"))
+              Nil
+            }
+          }
+        }
+        False -> fork_join_loop(control, downstream, values, new_count, total)
+      }
+    }
+    ForkJoinDispose -> Nil
+  }
+}
+
+fn list_set_at(lst: List(a), idx: Int, value: a) -> List(a) {
+  list.index_map(lst, fn(item, i) {
+    case i == idx {
+      True -> value
+      False -> item
+    }
+  })
+}
+
+fn collect_all_values(
+  options: List(Option(a)),
+  acc: List(a),
+) -> Result(List(a), Nil) {
+  case options {
+    [] -> Ok(list.reverse(acc))
+    [Some(v), ..rest] -> collect_all_values(rest, [v, ..acc])
+    [None, ..] -> Error(Nil)
+  }
+}

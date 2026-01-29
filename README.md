@@ -178,6 +178,7 @@ A `Disposable` represents a subscription that can be cancelled. Call `dispose()`
 | `skip_while(source, predicate)` | Skip while predicate is true |
 | `choose(source, fn)` | Filter + map via Option |
 | `distinct_until_changed(source)` | Skip consecutive duplicates |
+| `distinct(source)` | Filter ALL duplicates (seen list) |
 | `take_until(source, other)` | Take until other observable emits |
 | `take_last(source, n)` | Emit last N elements on completion |
 | `first(source)` | Take only first element (error if empty) |
@@ -194,6 +195,7 @@ A `Disposable` represents a subscription that can be cancelled. Call `dispose()`
 | `delay(source, ms)`        | Delay each emission by specified time         |
 | `debounce(source, ms)`     | Emit only after silence period                |
 | `throttle(source, ms)`     | Rate limit to at most one per period          |
+| `timeout(source, ms)`      | Error if no emission within timeout period    |
 
 ### Subject
 
@@ -212,6 +214,9 @@ A `Disposable` represents a subscription that can be cancelled. Call `dispose()`
 | `merge2(source1, source2)` | Merge two observables |
 | `concat(sources)` | Subscribe to sources sequentially |
 | `concat2(source1, source2)` | Concatenate two observables |
+| `amb(sources)` | Race: first source to emit wins, others disposed |
+| `race(sources)` | Alias for `amb` |
+| `fork_join(sources)` | Wait for all to complete, emit list of last values |
 | `combine_latest(s1, s2, fn)` | Combine latest values from two sources |
 | `with_latest_from(source, s2, fn)` | Sample source with latest from another |
 | `zip(source1, source2, fn)` | Pair elements by index |

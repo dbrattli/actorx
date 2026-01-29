@@ -26,6 +26,7 @@ pub fn main() {
     actorx.from_list([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
     |> actorx.filter(fn(x) { x % 2 == 0 })  // Keep even numbers
     |> actorx.map(fn(x) { x * 10 })          // Multiply by 10
+    |> actorx.take(3)                        // Take first 3
 
   // Create an observer
   let observer = actorx.make_observer(
@@ -40,8 +41,6 @@ pub fn main() {
   // Value: 20
   // Value: 40
   // Value: 60
-  // Value: 80
-  // Value: 100
   // Done!
 }
 ```
@@ -74,18 +73,19 @@ import gleam/io
 import gleam/int
 
 pub fn async_example() {
-  // Emit after 100ms delay
-  let observable = actorx.timer(100)
-    |> actorx.map(fn(_) { "Hello after 100ms!" })
+  // Emit 0, 1, 2, ... every 100ms, take first 5
+  let observable = actorx.interval(100)
+    |> actorx.take(5)
+    |> actorx.map(fn(x) { x * 10 })
 
   let observer = actorx.make_observer(
-    on_next: fn(x) { io.println(x) },
+    on_next: fn(x) { io.println(int.to_string(x)) },
     on_error: fn(_) { Nil },
     on_completed: fn() { io.println("Done!") },
   )
 
   let Disposable(dispose) = actorx.subscribe(observable, observer)
-  // Output after 100ms: Hello after 100ms!, Done!
+  // Output over 500ms: 0, 10, 20, 30, 40, Done!
 
   // Can dispose early to cancel
   // dispose()

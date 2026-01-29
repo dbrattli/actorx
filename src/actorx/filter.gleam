@@ -1,17 +1,20 @@
 //// Filter operators for ActorX
 ////
-//// These operators filter elements from an observable sequence:
-//// - filter: Keep elements matching predicate
-//// - choose: Filter and map in one operation
-////
-//// Note: Stateful operators (take, skip, etc.) require actors for proper
-//// state management. For synchronous observables, simplified versions are provided.
+//// These operators filter elements from an observable sequence.
+//// All stateful operators use actors for proper state management
+//// across async boundaries.
 
 import actorx/types.{
-  type Observable, type Observer, Observable, Observer, OnCompleted, OnError,
-  OnNext, composite_disposable, empty_disposable,
+  type Observable, type Observer, Disposable, Observable, Observer, OnCompleted,
+  OnError, OnNext,
 }
+import gleam/erlang/process.{type Subject}
+import gleam/list
 import gleam/option.{type Option, None, Some}
+
+// ============================================================================
+// Stateless operators (no actor needed)
+// ============================================================================
 
 /// Filters elements based on a predicate.
 /// Only elements for which predicate returns True are emitted.
@@ -63,80 +66,192 @@ pub fn choose(
   })
 }
 
-/// Returns the first N elements from the source (synchronous version).
-/// For async sources, use the actor-based version.
+// ============================================================================
+// take - Actor-based
+// ============================================================================
+
+type TakeMsg(a) {
+  TakeNext(a)
+  TakeError(String)
+  TakeCompleted
+  TakeDispose
+}
+
+/// Returns the first N elements from the source.
 pub fn take(source: Observable(a), count: Int) -> Observable(a) {
-  // Handle edge case: take(0) completes immediately
   case count <= 0 {
     True ->
       Observable(subscribe: fn(observer: Observer(a)) {
         let Observer(downstream) = observer
         downstream(OnCompleted)
-        empty_disposable()
+        Disposable(dispose: fn() { Nil })
       })
-    False -> {
+    False ->
       Observable(subscribe: fn(observer: Observer(a)) {
         let Observer(downstream) = observer
-        let counter_ref = make_ref(count)
+
+        let control_ready: Subject(Subject(TakeMsg(a))) = process.new_subject()
+
+        process.spawn(fn() {
+          let control: Subject(TakeMsg(a)) = process.new_subject()
+          process.send(control_ready, control)
+          take_loop(control, downstream, count)
+        })
+
+        let control = case process.receive(control_ready, 1000) {
+          Ok(s) -> s
+          Error(_) -> panic as "Failed to create take"
+        }
 
         let upstream_observer =
           Observer(notify: fn(n) {
             case n {
-              OnNext(x) -> {
-                let remaining = get_ref(counter_ref)
-                case remaining > 0 {
-                  True -> {
-                    downstream(OnNext(x))
-                    set_ref(counter_ref, remaining - 1)
-                    case remaining - 1 {
-                      0 -> downstream(OnCompleted)
-                      _ -> Nil
-                    }
-                  }
-                  False -> Nil
-                }
-              }
-              OnError(e) -> downstream(OnError(e))
-              OnCompleted -> {
-                // Only complete if take didn't complete us already
-                case get_ref(counter_ref) > 0 {
-                  True -> downstream(OnCompleted)
-                  False -> Nil
-                }
-              }
+              OnNext(x) -> process.send(control, TakeNext(x))
+              OnError(e) -> process.send(control, TakeError(e))
+              OnCompleted -> process.send(control, TakeCompleted)
             }
           })
 
         let Observable(subscribe) = source
-        subscribe(upstream_observer)
+        let source_disp = subscribe(upstream_observer)
+
+        Disposable(dispose: fn() {
+          let Disposable(d) = source_disp
+          d()
+          process.send(control, TakeDispose)
+          Nil
+        })
       })
+  }
+}
+
+fn take_loop(
+  control: Subject(TakeMsg(a)),
+  downstream: fn(types.Notification(a)) -> Nil,
+  remaining: Int,
+) -> Nil {
+  case remaining <= 0 {
+    True -> Nil
+    False -> {
+      let selector =
+        process.new_selector()
+        |> process.select(control)
+
+      case process.selector_receive_forever(selector) {
+        TakeNext(x) -> {
+          downstream(OnNext(x))
+          case remaining - 1 {
+            0 -> {
+              downstream(OnCompleted)
+              Nil
+            }
+            n -> take_loop(control, downstream, n)
+          }
+        }
+        TakeError(e) -> {
+          downstream(OnError(e))
+          Nil
+        }
+        TakeCompleted -> {
+          downstream(OnCompleted)
+          Nil
+        }
+        TakeDispose -> Nil
+      }
     }
   }
+}
+
+// ============================================================================
+// skip - Actor-based
+// ============================================================================
+
+type SkipMsg(a) {
+  SkipNext(a)
+  SkipError(String)
+  SkipCompleted
+  SkipDispose
 }
 
 /// Skips the first N elements from the source.
 pub fn skip(source: Observable(a), count: Int) -> Observable(a) {
   Observable(subscribe: fn(observer: Observer(a)) {
     let Observer(downstream) = observer
-    let counter_ref = make_ref(count)
+
+    let control_ready: Subject(Subject(SkipMsg(a))) = process.new_subject()
+
+    process.spawn(fn() {
+      let control: Subject(SkipMsg(a)) = process.new_subject()
+      process.send(control_ready, control)
+      skip_loop(control, downstream, count)
+    })
+
+    let control = case process.receive(control_ready, 1000) {
+      Ok(s) -> s
+      Error(_) -> panic as "Failed to create skip"
+    }
 
     let upstream_observer =
       Observer(notify: fn(n) {
         case n {
-          OnNext(x) -> {
-            let remaining = get_ref(counter_ref)
-            case remaining > 0 {
-              True -> set_ref(counter_ref, remaining - 1)
-              False -> downstream(OnNext(x))
-            }
-          }
-          _ -> downstream(n)
+          OnNext(x) -> process.send(control, SkipNext(x))
+          OnError(e) -> process.send(control, SkipError(e))
+          OnCompleted -> process.send(control, SkipCompleted)
         }
       })
 
     let Observable(subscribe) = source
-    subscribe(upstream_observer)
+    let source_disp = subscribe(upstream_observer)
+
+    Disposable(dispose: fn() {
+      let Disposable(d) = source_disp
+      d()
+      process.send(control, SkipDispose)
+      Nil
+    })
   })
+}
+
+fn skip_loop(
+  control: Subject(SkipMsg(a)),
+  downstream: fn(types.Notification(a)) -> Nil,
+  remaining: Int,
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    SkipNext(x) -> {
+      case remaining > 0 {
+        True -> skip_loop(control, downstream, remaining - 1)
+        False -> {
+          downstream(OnNext(x))
+          skip_loop(control, downstream, 0)
+        }
+      }
+    }
+    SkipError(e) -> {
+      downstream(OnError(e))
+      Nil
+    }
+    SkipCompleted -> {
+      downstream(OnCompleted)
+      Nil
+    }
+    SkipDispose -> Nil
+  }
+}
+
+// ============================================================================
+// take_while - Actor-based
+// ============================================================================
+
+type TakeWhileMsg(a) {
+  TakeWhileNext(a)
+  TakeWhileError(String)
+  TakeWhileCompleted
+  TakeWhileDispose
 }
 
 /// Takes elements while predicate returns True.
@@ -146,35 +261,84 @@ pub fn take_while(
 ) -> Observable(a) {
   Observable(subscribe: fn(observer: Observer(a)) {
     let Observer(downstream) = observer
-    let stopped_ref = make_ref(0)
+
+    let control_ready: Subject(Subject(TakeWhileMsg(a))) = process.new_subject()
+
+    process.spawn(fn() {
+      let control: Subject(TakeWhileMsg(a)) = process.new_subject()
+      process.send(control_ready, control)
+      take_while_loop(control, downstream, predicate)
+    })
+
+    let control = case process.receive(control_ready, 1000) {
+      Ok(s) -> s
+      Error(_) -> panic as "Failed to create take_while"
+    }
 
     let upstream_observer =
       Observer(notify: fn(n) {
         case n {
-          OnNext(x) ->
-            case get_ref(stopped_ref) {
-              0 ->
-                case predicate(x) {
-                  True -> downstream(OnNext(x))
-                  False -> {
-                    set_ref(stopped_ref, 1)
-                    downstream(OnCompleted)
-                  }
-                }
-              _ -> Nil
-            }
-          OnError(e) -> downstream(OnError(e))
-          OnCompleted ->
-            case get_ref(stopped_ref) {
-              0 -> downstream(OnCompleted)
-              _ -> Nil
-            }
+          OnNext(x) -> process.send(control, TakeWhileNext(x))
+          OnError(e) -> process.send(control, TakeWhileError(e))
+          OnCompleted -> process.send(control, TakeWhileCompleted)
         }
       })
 
     let Observable(subscribe) = source
-    subscribe(upstream_observer)
+    let source_disp = subscribe(upstream_observer)
+
+    Disposable(dispose: fn() {
+      let Disposable(d) = source_disp
+      d()
+      process.send(control, TakeWhileDispose)
+      Nil
+    })
   })
+}
+
+fn take_while_loop(
+  control: Subject(TakeWhileMsg(a)),
+  downstream: fn(types.Notification(a)) -> Nil,
+  predicate: fn(a) -> Bool,
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    TakeWhileNext(x) -> {
+      case predicate(x) {
+        True -> {
+          downstream(OnNext(x))
+          take_while_loop(control, downstream, predicate)
+        }
+        False -> {
+          downstream(OnCompleted)
+          Nil
+        }
+      }
+    }
+    TakeWhileError(e) -> {
+      downstream(OnError(e))
+      Nil
+    }
+    TakeWhileCompleted -> {
+      downstream(OnCompleted)
+      Nil
+    }
+    TakeWhileDispose -> Nil
+  }
+}
+
+// ============================================================================
+// skip_while - Actor-based
+// ============================================================================
+
+type SkipWhileMsg(a) {
+  SkipWhileNext(a)
+  SkipWhileError(String)
+  SkipWhileCompleted
+  SkipWhileDispose
 }
 
 /// Skips elements while predicate returns True.
@@ -184,238 +348,359 @@ pub fn skip_while(
 ) -> Observable(a) {
   Observable(subscribe: fn(observer: Observer(a)) {
     let Observer(downstream) = observer
-    let emitting_ref = make_ref(0)
+
+    let control_ready: Subject(Subject(SkipWhileMsg(a))) = process.new_subject()
+
+    process.spawn(fn() {
+      let control: Subject(SkipWhileMsg(a)) = process.new_subject()
+      process.send(control_ready, control)
+      skip_while_loop(control, downstream, predicate, False)
+    })
+
+    let control = case process.receive(control_ready, 1000) {
+      Ok(s) -> s
+      Error(_) -> panic as "Failed to create skip_while"
+    }
 
     let upstream_observer =
       Observer(notify: fn(n) {
         case n {
-          OnNext(x) ->
-            case get_ref(emitting_ref) {
-              1 -> downstream(OnNext(x))
-              _ ->
-                case predicate(x) {
-                  True -> Nil
-                  False -> {
-                    set_ref(emitting_ref, 1)
-                    downstream(OnNext(x))
-                  }
-                }
-            }
-          _ -> downstream(n)
-        }
-      })
-
-    let Observable(subscribe) = source
-    subscribe(upstream_observer)
-  })
-}
-
-/// Emits elements that are different from the previous element.
-pub fn distinct_until_changed(source: Observable(a)) -> Observable(a) {
-  Observable(subscribe: fn(observer: Observer(a)) {
-    let Observer(downstream) = observer
-    let latest_ref = make_option_ref()
-
-    let upstream_observer =
-      Observer(notify: fn(n) {
-        case n {
-          OnNext(x) ->
-            case get_option_ref(latest_ref) {
-              None -> {
-                downstream(OnNext(x))
-                set_option_ref(latest_ref, Some(x))
-              }
-              Some(prev) ->
-                case prev == x {
-                  True -> Nil
-                  False -> {
-                    downstream(OnNext(x))
-                    set_option_ref(latest_ref, Some(x))
-                  }
-                }
-            }
-          _ -> downstream(n)
-        }
-      })
-
-    let Observable(subscribe) = source
-    subscribe(upstream_observer)
-  })
-}
-
-/// Returns elements until the other observable emits.
-pub fn take_until(source: Observable(a), other: Observable(b)) -> Observable(a) {
-  Observable(subscribe: fn(observer: Observer(a)) {
-    let Observer(downstream) = observer
-    let stopped_ref = make_ref(0)
-
-    // Subscribe to 'other'
-    let Observable(other_subscribe) = other
-    let other_observer =
-      Observer(notify: fn(n) {
-        case n {
-          OnNext(_) ->
-            case get_ref(stopped_ref) {
-              0 -> {
-                set_ref(stopped_ref, 1)
-                downstream(OnCompleted)
-              }
-              _ -> Nil
-            }
-          OnError(e) -> downstream(OnError(e))
-          OnCompleted -> Nil
-        }
-      })
-    let other_disp = other_subscribe(other_observer)
-
-    // Subscribe to source
-    let upstream_observer =
-      Observer(notify: fn(n) {
-        case n {
-          OnNext(x) ->
-            case get_ref(stopped_ref) {
-              0 -> downstream(OnNext(x))
-              _ -> Nil
-            }
-          OnError(e) -> downstream(OnError(e))
-          OnCompleted ->
-            case get_ref(stopped_ref) {
-              0 -> {
-                set_ref(stopped_ref, 1)
-                downstream(OnCompleted)
-              }
-              _ -> Nil
-            }
+          OnNext(x) -> process.send(control, SkipWhileNext(x))
+          OnError(e) -> process.send(control, SkipWhileError(e))
+          OnCompleted -> process.send(control, SkipWhileCompleted)
         }
       })
 
     let Observable(subscribe) = source
     let source_disp = subscribe(upstream_observer)
 
-    composite_disposable([source_disp, other_disp])
+    Disposable(dispose: fn() {
+      let Disposable(d) = source_disp
+      d()
+      process.send(control, SkipWhileDispose)
+      Nil
+    })
   })
+}
+
+fn skip_while_loop(
+  control: Subject(SkipWhileMsg(a)),
+  downstream: fn(types.Notification(a)) -> Nil,
+  predicate: fn(a) -> Bool,
+  emitting: Bool,
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    SkipWhileNext(x) -> {
+      case emitting {
+        True -> {
+          downstream(OnNext(x))
+          skip_while_loop(control, downstream, predicate, True)
+        }
+        False -> {
+          case predicate(x) {
+            True -> skip_while_loop(control, downstream, predicate, False)
+            False -> {
+              downstream(OnNext(x))
+              skip_while_loop(control, downstream, predicate, True)
+            }
+          }
+        }
+      }
+    }
+    SkipWhileError(e) -> {
+      downstream(OnError(e))
+      Nil
+    }
+    SkipWhileCompleted -> {
+      downstream(OnCompleted)
+      Nil
+    }
+    SkipWhileDispose -> Nil
+  }
+}
+
+// ============================================================================
+// distinct_until_changed - Actor-based
+// ============================================================================
+
+type DistinctMsg(a) {
+  DistinctNext(a)
+  DistinctError(String)
+  DistinctCompleted
+  DistinctDispose
+}
+
+/// Emits elements that are different from the previous element.
+pub fn distinct_until_changed(source: Observable(a)) -> Observable(a) {
+  Observable(subscribe: fn(observer: Observer(a)) {
+    let Observer(downstream) = observer
+
+    let control_ready: Subject(Subject(DistinctMsg(a))) = process.new_subject()
+
+    process.spawn(fn() {
+      let control: Subject(DistinctMsg(a)) = process.new_subject()
+      process.send(control_ready, control)
+      distinct_loop(control, downstream, None)
+    })
+
+    let control = case process.receive(control_ready, 1000) {
+      Ok(s) -> s
+      Error(_) -> panic as "Failed to create distinct_until_changed"
+    }
+
+    let upstream_observer =
+      Observer(notify: fn(n) {
+        case n {
+          OnNext(x) -> process.send(control, DistinctNext(x))
+          OnError(e) -> process.send(control, DistinctError(e))
+          OnCompleted -> process.send(control, DistinctCompleted)
+        }
+      })
+
+    let Observable(subscribe) = source
+    let source_disp = subscribe(upstream_observer)
+
+    Disposable(dispose: fn() {
+      let Disposable(d) = source_disp
+      d()
+      process.send(control, DistinctDispose)
+      Nil
+    })
+  })
+}
+
+fn distinct_loop(
+  control: Subject(DistinctMsg(a)),
+  downstream: fn(types.Notification(a)) -> Nil,
+  last: Option(a),
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    DistinctNext(x) -> {
+      case last {
+        None -> {
+          downstream(OnNext(x))
+          distinct_loop(control, downstream, Some(x))
+        }
+        Some(prev) -> {
+          case prev == x {
+            True -> distinct_loop(control, downstream, last)
+            False -> {
+              downstream(OnNext(x))
+              distinct_loop(control, downstream, Some(x))
+            }
+          }
+        }
+      }
+    }
+    DistinctError(e) -> {
+      downstream(OnError(e))
+      Nil
+    }
+    DistinctCompleted -> {
+      downstream(OnCompleted)
+      Nil
+    }
+    DistinctDispose -> Nil
+  }
+}
+
+// ============================================================================
+// take_until - Actor-based
+// ============================================================================
+
+type TakeUntilMsg(a) {
+  TakeUntilSourceNext(a)
+  TakeUntilSourceError(String)
+  TakeUntilSourceCompleted
+  TakeUntilOtherEmit
+  TakeUntilOtherError(String)
+  TakeUntilDispose
+}
+
+/// Returns elements until the other observable emits.
+pub fn take_until(source: Observable(a), other: Observable(b)) -> Observable(a) {
+  Observable(subscribe: fn(observer: Observer(a)) {
+    let Observer(downstream) = observer
+
+    let control_ready: Subject(Subject(TakeUntilMsg(a))) = process.new_subject()
+
+    process.spawn(fn() {
+      let control: Subject(TakeUntilMsg(a)) = process.new_subject()
+      process.send(control_ready, control)
+      take_until_loop(control, downstream)
+    })
+
+    let control = case process.receive(control_ready, 1000) {
+      Ok(s) -> s
+      Error(_) -> panic as "Failed to create take_until"
+    }
+
+    // Subscribe to other
+    let other_observer =
+      Observer(notify: fn(n) {
+        case n {
+          OnNext(_) -> process.send(control, TakeUntilOtherEmit)
+          OnError(e) -> process.send(control, TakeUntilOtherError(e))
+          OnCompleted -> Nil
+        }
+      })
+    let Observable(other_subscribe) = other
+    let other_disp = other_subscribe(other_observer)
+
+    // Subscribe to source
+    let source_observer =
+      Observer(notify: fn(n) {
+        case n {
+          OnNext(x) -> process.send(control, TakeUntilSourceNext(x))
+          OnError(e) -> process.send(control, TakeUntilSourceError(e))
+          OnCompleted -> process.send(control, TakeUntilSourceCompleted)
+        }
+      })
+    let Observable(source_subscribe) = source
+    let source_disp = source_subscribe(source_observer)
+
+    Disposable(dispose: fn() {
+      let Disposable(d1) = source_disp
+      let Disposable(d2) = other_disp
+      d1()
+      d2()
+      process.send(control, TakeUntilDispose)
+      Nil
+    })
+  })
+}
+
+fn take_until_loop(
+  control: Subject(TakeUntilMsg(a)),
+  downstream: fn(types.Notification(a)) -> Nil,
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
+
+  case process.selector_receive_forever(selector) {
+    TakeUntilSourceNext(x) -> {
+      downstream(OnNext(x))
+      take_until_loop(control, downstream)
+    }
+    TakeUntilSourceError(e) -> {
+      downstream(OnError(e))
+      Nil
+    }
+    TakeUntilSourceCompleted -> {
+      downstream(OnCompleted)
+      Nil
+    }
+    TakeUntilOtherEmit -> {
+      downstream(OnCompleted)
+      Nil
+    }
+    TakeUntilOtherError(e) -> {
+      downstream(OnError(e))
+      Nil
+    }
+    TakeUntilDispose -> Nil
+  }
+}
+
+// ============================================================================
+// take_last - Actor-based
+// ============================================================================
+
+type TakeLastMsg(a) {
+  TakeLastNext(a)
+  TakeLastError(String)
+  TakeLastCompleted
+  TakeLastDispose
 }
 
 /// Returns the last N elements from the source.
 pub fn take_last(source: Observable(a), count: Int) -> Observable(a) {
   Observable(subscribe: fn(observer: Observer(a)) {
     let Observer(downstream) = observer
-    let buffer_ref = make_list_ref()
+
+    let control_ready: Subject(Subject(TakeLastMsg(a))) = process.new_subject()
+
+    process.spawn(fn() {
+      let control: Subject(TakeLastMsg(a)) = process.new_subject()
+      process.send(control_ready, control)
+      take_last_loop(control, downstream, [], count)
+    })
+
+    let control = case process.receive(control_ready, 1000) {
+      Ok(s) -> s
+      Error(_) -> panic as "Failed to create take_last"
+    }
 
     let upstream_observer =
       Observer(notify: fn(n) {
         case n {
-          OnNext(x) -> {
-            let buffer = get_list_ref(buffer_ref)
-            let new_buffer = append_and_limit(buffer, x, count)
-            set_list_ref(buffer_ref, new_buffer)
-          }
-          OnError(e) -> downstream(OnError(e))
-          OnCompleted -> {
-            let buffer = get_list_ref(buffer_ref)
-            emit_all(buffer, fn(x) { downstream(OnNext(x)) })
-            downstream(OnCompleted)
-          }
+          OnNext(x) -> process.send(control, TakeLastNext(x))
+          OnError(e) -> process.send(control, TakeLastError(e))
+          OnCompleted -> process.send(control, TakeLastCompleted)
         }
       })
 
     let Observable(subscribe) = source
-    subscribe(upstream_observer)
+    let source_disp = subscribe(upstream_observer)
+
+    Disposable(dispose: fn() {
+      let Disposable(d) = source_disp
+      d()
+      process.send(control, TakeLastDispose)
+      Nil
+    })
   })
 }
 
-// Mutable reference helpers using Erlang process dictionary
-// These are used for state management in synchronous observables
+fn take_last_loop(
+  control: Subject(TakeLastMsg(a)),
+  downstream: fn(types.Notification(a)) -> Nil,
+  buffer: List(a),
+  max_count: Int,
+) -> Nil {
+  let selector =
+    process.new_selector()
+    |> process.select(control)
 
-@external(erlang, "erlang", "put")
-fn erlang_put(key: a, value: b) -> c
-
-@external(erlang, "erlang", "get")
-fn erlang_get(key: a) -> b
-
-@external(erlang, "erlang", "make_ref")
-fn erlang_make_ref() -> a
-
-fn make_ref(initial: Int) -> a {
-  let ref = erlang_make_ref()
-  erlang_put(ref, initial)
-  ref
-}
-
-fn get_ref(ref: a) -> Int {
-  erlang_get(ref)
-}
-
-fn set_ref(ref: a, value: Int) -> Nil {
-  erlang_put(ref, value)
-  Nil
-}
-
-fn make_option_ref() -> a {
-  let ref = erlang_make_ref()
-  erlang_put(ref, None)
-  ref
-}
-
-fn get_option_ref(ref: a) -> Option(b) {
-  erlang_get(ref)
-}
-
-fn set_option_ref(ref: a, value: Option(b)) -> Nil {
-  erlang_put(ref, value)
-  Nil
-}
-
-fn make_list_ref() -> a {
-  let ref = erlang_make_ref()
-  erlang_put(ref, [])
-  ref
-}
-
-fn get_list_ref(ref: a) -> List(b) {
-  erlang_get(ref)
-}
-
-fn set_list_ref(ref: a, value: List(b)) -> Nil {
-  erlang_put(ref, value)
-  Nil
-}
-
-fn append_and_limit(list: List(a), item: a, max: Int) -> List(a) {
-  let new_list = append_to_end(list, item)
-  case length(new_list) > max {
-    True -> drop_first(new_list)
-    False -> new_list
-  }
-}
-
-fn append_to_end(list: List(a), item: a) -> List(a) {
-  case list {
-    [] -> [item]
-    [head, ..tail] -> [head, ..append_to_end(tail, item)]
-  }
-}
-
-fn length(list: List(a)) -> Int {
-  case list {
-    [] -> 0
-    [_, ..tail] -> 1 + length(tail)
-  }
-}
-
-fn drop_first(list: List(a)) -> List(a) {
-  case list {
-    [] -> []
-    [_, ..tail] -> tail
-  }
-}
-
-fn emit_all(list: List(a), emit: fn(a) -> Nil) -> Nil {
-  case list {
-    [] -> Nil
-    [head, ..tail] -> {
-      emit(head)
-      emit_all(tail, emit)
+  case process.selector_receive_forever(selector) {
+    TakeLastNext(x) -> {
+      let new_buffer = append_and_limit(buffer, x, max_count)
+      take_last_loop(control, downstream, new_buffer, max_count)
     }
+    TakeLastError(e) -> {
+      downstream(OnError(e))
+      Nil
+    }
+    TakeLastCompleted -> {
+      emit_all(buffer, fn(x) { downstream(OnNext(x)) })
+      downstream(OnCompleted)
+      Nil
+    }
+    TakeLastDispose -> Nil
   }
+}
+
+// ============================================================================
+// Helper functions
+// ============================================================================
+
+fn append_and_limit(buffer: List(a), item: a, max: Int) -> List(a) {
+  let new_buffer = list.append(buffer, [item])
+  case list.length(new_buffer) > max {
+    True -> list.drop(new_buffer, 1)
+    False -> new_buffer
+  }
+}
+
+fn emit_all(items: List(a), emit: fn(a) -> Nil) -> Nil {
+  list.each(items, emit)
 }

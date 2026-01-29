@@ -124,10 +124,7 @@ fn merge_loop(
 }
 
 /// Merge two observables.
-pub fn merge2(
-  source1: Observable(a),
-  source2: Observable(a),
-) -> Observable(a) {
+pub fn merge2(source1: Observable(a), source2: Observable(a)) -> Observable(a) {
   merge([source1, source2])
 }
 
@@ -171,7 +168,15 @@ pub fn combine_latest(
     process.spawn(fn() {
       let control: Subject(CombineLatestMsg(a, b)) = process.new_subject()
       process.send(control_ready, control)
-      combine_latest_loop(control, downstream, combiner, None, None, False, False)
+      combine_latest_loop(
+        control,
+        downstream,
+        combiner,
+        None,
+        None,
+        False,
+        False,
+      )
     })
 
     // Get control subject

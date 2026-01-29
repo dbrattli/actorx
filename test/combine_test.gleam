@@ -249,8 +249,7 @@ pub fn with_latest_from_sampler_first_test() {
 }
 
 pub fn with_latest_from_multiple_samples_test() {
-  let result_subject: Subject(Notification(#(Int, Int))) =
-    process.new_subject()
+  let result_subject: Subject(Notification(#(Int, Int))) = process.new_subject()
 
   // Source emits after sampler has had time to emit multiple values
   let source =
@@ -345,8 +344,7 @@ pub fn zip_singles_test() {
 }
 
 pub fn zip_async_sources_test() {
-  let result_subject: Subject(Notification(#(Int, Int))) =
-    process.new_subject()
+  let result_subject: Subject(Notification(#(Int, Int))) = process.new_subject()
 
   // Two timer-based sources with different delays
   let obs1 =

@@ -10,7 +10,7 @@ This is a port of [FSharp.Control.AsyncRx](https://github.com/dbrattli/AsyncRx) 
 ## Installation
 
 ```sh
-gleam add actorx@1
+gleam add actorx
 ```
 
 ## Example
